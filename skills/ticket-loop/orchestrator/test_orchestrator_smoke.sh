@@ -44,6 +44,9 @@ cat > "$TMP/stub-pass.sh" <<'EOF'
 [ "${CLAUDE_CODE_OAUTH_TOKEN:-}" = "fake-claude-token" ] || { echo "FAIL: common Claude token not injected" >&2; exit 1; }
 [ "${DW_SKILL:-}" = "ticket-loop-parent" ] || { echo "FAIL: roster skill not passed as DW_SKILL" >&2; exit 1; }
 [ "${DW_MANAGER:-}" = "1" ] || { echo "FAIL: roster manager mode not passed as DW_MANAGER" >&2; exit 1; }
+# No ingress marker for this tenant (its env has no chat id) → the pass must be
+# told explicitly to poll Telegram directly, never left to guess.
+[ "${TICKET_LOOP_INGRESS:-}" = "0" ] || { echo "FAIL: TICKET_LOOP_INGRESS not set to 0 for an unserved tenant" >&2; exit 1; }
 mkdir -p "$TICKET_LOOP_STATE_DIR"
 printf '{"picked":1,"pr_opened":1,"asked":0,"blocked":0,"progressed":true,"error":null}\n' \
   > "$TICKET_LOOP_STATE_DIR/outcome.json"

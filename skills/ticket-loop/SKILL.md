@@ -212,6 +212,17 @@ live under that state dir on the mounted volume (persisting across the ephemeral
 `docker run --rm` of each pass). The Telegram bridge and lock honor the same env,
 so they stay in agreement — nothing to configure per pass.
 
+**Message intake is separate from you.** Under the orchestrator a Telegram
+*ingress* daemon is the only thing that ever calls `getUpdates`: the second a
+human posts in the group it spools the message to the state dir's `inbox/`,
+reacts 👀 on it (the visible "received" ack), and wakes the scheduler. The
+runner sets `TICKET_LOOP_INGRESS=1` for your pass and `telegram.py poll` then
+reads that spool — no network, and a message sent while you were mid-build is
+already acked and waiting for your next drain. Nothing changes in how you call
+`poll`; just never assume "no output" means "nobody wrote" without draining.
+(Single-mode timers and laptop runs have no daemon: `poll` long-polls Telegram
+itself as before.)
+
 1. `python3 telegram.py poll --timeout 0` (the bridge bundled with this skill) —
    confirms `TELEGRAM_BOT_TOKEN` + `AGENT_TELEGRAM_CHAT_ID` are configured (it exits
    with a clear error if not). If `AGENT_TELEGRAM_CHAT_ID` is missing, stop and tell
@@ -277,8 +288,18 @@ too. Outbound, `telegram.py send-photo --caption "..." <path>` posts an image
 
 **The queue label is ONLY ever applied through this group, on approval — never
 self-selected, never added silently.** Approvals must be plain text messages —
-Telegram emoji *reactions* never reach the bot, so a thumbs-up reaction is
+a human's emoji *reaction* never reaches the bot, so a thumbs-up reaction is
 invisible; if someone seems to have approved but nothing arrived, that's why.
+
+**Acknowledge what you acted on.** Reactions are the group's progress bar: the
+ingress puts 👀 on every message the moment it lands ("received"); once you
+have *acted* on a message — mirrored an answer, created or queued a ticket,
+answered a `question:`, applied a `flag`, started a build from it — flip it with
+`telegram.py react <message_id> 👍` ("handled"). Do it right after the action,
+per message, before moving on. Leave 👀 on chatter and on anything you decided
+not to act on, so a lingering 👀 always means "seen, nothing done" rather than
+"bot is dead". Never react on a message you haven't drained — that lies. (Only
+Telegram's fixed reaction set works: 👀 and 👍 do, ✅ does not.)
 
 - **Ticket-creation request** (`ticket: null`, first line starts case-insensitive
   with `bug:`, `feature:`, or `ticket:`): `create_ticket` in your team (and in
@@ -412,8 +433,10 @@ moment you're back — immediately after ANY `telegram.py send` (a `🔨 Startin
 `✅ PR opened`, a `⚠️ failed`) — run this poll+classify drain again before doing
 anything else. A reply that arrived during a long build then gets handled seconds
 later, when you send the completion message, instead of sitting unread until the
-next scheduled wake. Cheap (`poll --timeout 0`), and it keeps the group feeling
-like a live conversation rather than a batch job.
+next scheduled wake. Cheap (`poll --timeout 0` — under the ingress it is a local
+file read), and it keeps the group feeling like a live conversation rather than a
+batch job. The ingress has already 👀-acked anything waiting, so the human knows
+it landed; your re-drain is what turns 👀 into a reply and a 👍.
 
 #### Clearing stale questions (prune + release the hold)
 

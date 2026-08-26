@@ -15,7 +15,7 @@ The entire system is this folder:
 | File | What it is |
 |---|---|
 | `SKILL.md` | The orchestrator — a Claude Code skill. The whole agent's behavior, including its security guardrails, lives here in plain English. |
-| `telegram.py` | The Telegram bridge — Python stdlib only. `send` / `send-photo` / `send-document` / `poll` / `discover` subcommands wrapping `sendMessage`, `sendPhoto`, `sendDocument`, and long-polled `getUpdates`. Inbound photos are downloaded locally so the agent can look at bug screenshots. |
+| `telegram.py` | The Telegram bridge — Python stdlib only. `send` / `send-photo` / `send-document` / `react` / `poll` / `peek` / `ingress` / `discover` subcommands wrapping `sendMessage`, `sendPhoto`, `sendDocument`, `setMessageReaction`, and long-polled `getUpdates` — or, under the orchestrator's ingress daemon, the local spool it fills (`orchestrator/README.md` → *Telegram ingress*). Inbound photos are downloaded locally so the agent can look at bug screenshots. |
 | `loop-lock.sh` | A shared singleton lock so a scheduled pass and an interactive `/loop` session never run at once (no double-drained Telegram offset, no double-builds). |
 | `cron-run.sh` / `run-pass.sh` / `install-cron.sh` | Optional always-on: one headless pass under the lock. `cron-run.sh` is the config-driven runner (laptop launchd or container); `run-pass.sh` is the in-container entrypoint; `install-cron.sh` is the macOS launchd installer (adapt for Linux cron/systemd). |
 | `sweep-worktrees.sh` | The agent-tier worktree/branch prune policy `cron-run.sh` runs each pass — reclaims the loop's dead build worktrees + merged `agent/*` branches so the box doesn't leak disk. Standalone-callable; the headless twin of the laptop `/worktree --gc`. |

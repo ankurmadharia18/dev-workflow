@@ -392,6 +392,93 @@ class TestPickNext(unittest.TestCase):
             self.assertEqual(d["action"], "sleep")
             self.assertTrue(d["consume_run_now"])
 
+    # ── ingress wakes: eligibility signals, not force-runs ──
+    def test_inbox_wake_skips_ladder_but_not_precheck_flags(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            roster = self.roster2(tmp)
+            st = self.fresh_state(roster)
+            st["projects"]["b"]["next_eligible"] = orch.to_iso(
+                NOW + datetime.timedelta(hours=2))               # ladder says wait
+            d = orch.pick_next(roster, st, NOW, inbox_wakes=["b"])
+            self.assertEqual(d["action"], "run")
+            self.assertEqual(d["project"]["name"], "b")
+            self.assertFalse(d["precheck"])                      # the wake IS the signal
+            self.assertFalse(d["force_full"])                    # not a human force
+            self.assertEqual((d["wake_kind"], d["wake_name"]), ("inbox", "b"))
+            self.assertEqual(d["drop_wakes"], [])
+            self.assertFalse(d["consume_run_now"])               # no human file involved
+
+    def test_inbox_wake_honors_memory_floor_and_keeps_wakes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            roster = self.roster2(tmp)
+            st = self.fresh_state(roster)
+            d = orch.pick_next(roster, st, NOW, mem_mb=2000, inbox_wakes=["b", "a"])
+            self.assertEqual(d["action"], "sleep")
+            self.assertEqual(d["sleep_seconds"], 300)
+            self.assertEqual(d["drop_wakes"], [])                # both kept
+
+    def test_inbox_wake_honors_window_and_keeps_wake(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            roster = self.roster2(tmp, window_b="13:00-18:00")  # NOW is 12:00
+            st = self.fresh_state(roster)
+            before = json.dumps(st["projects"])
+            d = orch.pick_next(roster, st, NOW, inbox_wakes=["b"])
+            self.assertEqual(d["action"], "sleep")
+            self.assertEqual(d["sleep_seconds"], 3600)
+            self.assertEqual(d["drop_wakes"], [])
+            self.assertEqual(json.dumps(st["projects"]), before)
+            # a human force ignores the window (unchanged behaviour)
+            d = orch.pick_next(roster, st, NOW, run_now="b")
+            self.assertEqual(d["action"], "run")
+
+    def test_deferred_wake_does_not_starve_a_runnable_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            roster = self.roster2(tmp, window_b="13:00-18:00")  # b closed, a open
+            st = self.fresh_state(roster)
+            st["projects"]["a"]["next_eligible"] = orch.to_iso(NOW + datetime.timedelta(hours=1))
+            d = orch.pick_next(roster, st, NOW, inbox_wakes=["b", "a"])   # b is OLDER
+            self.assertEqual(d["action"], "run")
+            self.assertEqual(d["wake_name"], "a")
+            self.assertEqual(d["drop_wakes"], [])                # b stays pending
+
+    def test_lock_held_wake_kept_and_others_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            roster = self.roster2(tmp)
+            st = self.fresh_state(roster)
+            lock = Path(roster["projects"][1]["state_dir"]) / "loop.lock"
+            lock.mkdir(parents=True)
+            (lock / "pid").write_text(str(os.getpid()))          # live owner: us
+            self.assertTrue(orch.lock_held(roster["projects"][1]["state_dir"]))
+            d = orch.pick_next(roster, st, NOW, inbox_wakes=["b", "a"])
+            self.assertEqual((d["action"], d["wake_name"]), ("run", "a"))
+            (lock / "pid").write_text("999999999")               # dead owner → not held
+            self.assertFalse(orch.lock_held(roster["projects"][1]["state_dir"]))
+            d = orch.pick_next(roster, st, NOW, inbox_wakes=["b", "a"])
+            self.assertEqual(d["wake_name"], "b")
+
+    def test_inbox_wake_for_paused_or_parked_or_unknown_is_dropped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            roster = self.roster2(tmp)
+            st = self.fresh_state(roster)
+            st["projects"]["b"]["parked_until"] = orch.to_iso(
+                NOW + datetime.timedelta(hours=6))
+            d = orch.pick_next(roster, st, NOW, inbox_wakes=["b", "zzz"])
+            self.assertEqual(d["project"]["name"], "a")          # normal round-robin
+            self.assertEqual(d["drop_wakes"], ["b", "zzz"])      # wake files deleted
+            self.assertNotIn("wake_kind", d)
+            roster["projects"][1]["enabled"] = False
+            st["projects"]["b"].pop("parked_until")
+            d = orch.pick_next(roster, st, NOW, inbox_wakes=["b"])
+            self.assertEqual((d["project"]["name"], d["drop_wakes"]), ("a", ["b"]))
+
+    def test_human_run_now_beats_inbox_wakes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            roster = self.roster2(tmp)
+            st = self.fresh_state(roster)
+            d = orch.pick_next(roster, st, NOW, run_now="a", inbox_wakes=["b"])
+            self.assertEqual((d["project"]["name"], d["force_full"], d["consume_run_now"]), ("a", True, True))
+            self.assertEqual(d["drop_wakes"], [])                # b's wake untouched
+
     def test_run_now_unknown_name_falls_through(self):
         with tempfile.TemporaryDirectory() as tmp:
             roster = self.roster2(tmp)

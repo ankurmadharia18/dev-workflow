@@ -18,6 +18,7 @@ import io
 import json
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -405,6 +406,202 @@ class TestCmdPollShared(unittest.TestCase):
         self.assertEqual(self.api_params["offset"], 100)
         self.assertEqual([m["message_id"] for m in out], [150])
         self.assertEqual(self.read_offset(), 151)
+
+
+class TestSpoolMode(unittest.TestCase):
+    """Under the Telegram ingress the pass reads <state>/inbox/*.json and NEVER
+    calls getUpdates; consumed records become .done; a leftover spool is still
+    drained first in direct mode."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.state_dir = Path(self._tmp.name)
+        self.state_path = self.state_dir / "state.json"
+        self._orig_state_path = telegram.STATE_PATH
+        telegram.STATE_PATH = self.state_path
+        self.state_path.write_text(json.dumps({"offset": 100, "questions": {
+            "77": {"ticket": "ABC-7", "text": "q?", "asked_at": "2026-01-01T00:00:00Z", "project": "P"}}}))
+        self._orig_api = telegram.api
+        self.api_calls = []
+        telegram.api = self._api
+        self._orig_sleep = telegram.time.sleep
+        telegram.time.sleep = lambda s: None
+        os.environ["AGENT_TELEGRAM_CHAT_ID"] = "-100777"
+        os.environ.pop("TICKET_LOOP_INGRESS", None)
+
+    def tearDown(self):
+        telegram.STATE_PATH = self._orig_state_path
+        telegram.api = self._orig_api
+        telegram.time.sleep = self._orig_sleep
+        os.environ.pop("AGENT_TELEGRAM_CHAT_ID", None)
+        os.environ.pop("TICKET_LOOP_INGRESS", None)
+        self._tmp.cleanup()
+
+    def _api(self, method, params, **kw):
+        self.api_calls.append((method, params))
+        return self._api_result
+
+    _api_result = []
+
+    def spool(self, uid, received="2026-08-26T10:00:00Z", chat="-100777", bot=False, reply_to=None,
+              media=None, text="hi"):
+        inbox = self.state_dir / "inbox"; inbox.mkdir(exist_ok=True)
+        msg = {"message_id": uid, "chat": {"id": int(chat)},
+               "from": {"is_bot": bot, "username": "u", "id": 9}, "text": text}
+        if reply_to:
+            msg["reply_to_message"] = {"message_id": reply_to}
+        (inbox / f"{uid}.json").write_text(json.dumps(
+            {"update_id": uid, "received_at": received, "message": msg, "media_path": media}))
+
+    def marker(self, age_s=0):
+        ts = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=age_s)
+        (self.state_dir / "ingress.json").write_text(json.dumps(
+            {"updated_at": ts.isoformat().replace("+00:00", "Z"), "tg_offset": 5, "token_fp": "x"}))
+
+    def run_poll(self, timeout=0):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            telegram.cmd_poll(argparse.Namespace(timeout=timeout))
+        return [json.loads(line) for line in buf.getvalue().splitlines()]
+
+    def run_peek(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            telegram.cmd_peek(argparse.Namespace())
+        return buf.getvalue().strip()
+
+    def inbox_names(self):
+        return sorted(p.name for p in (self.state_dir / "inbox").iterdir())
+
+    def test_mode_detection(self):
+        self.assertFalse(telegram.ingress_mode())               # no marker
+        self.marker(age_s=10)
+        self.assertTrue(telegram.ingress_mode())                # fresh → auto spool
+        self.marker(age_s=900)
+        self.assertFalse(telegram.ingress_mode())               # stale → direct
+        os.environ["TICKET_LOOP_INGRESS"] = "1"
+        self.assertTrue(telegram.ingress_mode())                # explicit wins
+        os.environ["TICKET_LOOP_INGRESS"] = "0"
+        self.marker(age_s=1)
+        self.assertFalse(telegram.ingress_mode())
+        self.assertFalse(telegram.ingress_fresh({"updated_at": "garbage"}))
+
+    def test_spool_poll_emits_in_order_consumes_and_never_polls_telegram(self):
+        os.environ["TICKET_LOOP_INGRESS"] = "1"
+        self.spool(12, received="2026-08-26T10:00:02Z", reply_to=77)
+        self.spool(10, received="2026-08-26T10:00:00Z", text="ABC-9 go")
+        self.spool(11, received="2026-08-26T10:00:01Z", chat="-42")      # foreign: consumed, silent
+        self.spool(13, received="2026-08-26T10:00:03Z", bot=True)        # bot: consumed, silent
+        pic = self.state_dir / "media" / "14.jpg"; pic.parent.mkdir(); pic.write_bytes(b"x")
+        self.spool(14, received="2026-08-26T10:00:04Z", media=str(pic))
+        (self.state_dir / "inbox" / "junk.json").write_text("{}")       # not an update id
+        (self.state_dir / "inbox" / "15.json").write_text("not json")   # left alone
+        out = self.run_poll()
+        self.assertEqual([m["message_id"] for m in out], [10, 12, 14])
+        self.assertEqual(out[0]["ticket"], "ABC-9")
+        self.assertEqual((out[1]["ticket"], out[1]["project"]), ("ABC-7", "P"))   # reply → question map
+        self.assertEqual(out[2]["media_path"], str(pic))
+        self.assertEqual(self.api_calls, [])                    # no getUpdates, no getFile
+        self.assertEqual(self.inbox_names(),        # foreign/bot/junk LEFT in place (warned)
+                         ["10.done", "11.json", "12.done", "13.json", "14.done", "15.json", "junk.json"])
+        self.assertGreater(Path(self.state_dir, "inbox", "10.done").stat().st_mtime,
+                           time.time() - 5)                     # mtime reset → GC from consumption
+        st = json.loads(self.state_path.read_text())
+        self.assertEqual(st["questions"], {})                   # reply consumed its entry
+        self.assertEqual(st["offset"], 100)                     # untouched in spool mode
+        batch = json.loads((self.state_dir / "last-batch.json").read_text())
+        self.assertEqual([m["message_id"] for m in batch], [10, 12, 14])
+
+    def test_consume_failure_means_not_emitted(self):
+        os.environ["TICKET_LOOP_INGRESS"] = "1"
+        self.spool(10); self.spool(11, received="2026-08-26T10:00:01Z")
+        orig = telegram.os.replace
+        def flaky(src, dst):
+            if str(src).endswith("11.json"):
+                raise PermissionError("ro")
+            return orig(src, dst)
+        telegram.os.replace = flaky
+        try:
+            out = self.run_poll()
+        finally:
+            telegram.os.replace = orig
+        self.assertEqual([m["message_id"] for m in out], [10])   # 11 waits for next poll
+        self.assertEqual(self.inbox_names(), ["10.done", "11.json"])
+        batch = json.loads((self.state_dir / "last-batch.json").read_text())
+        self.assertEqual([m["message_id"] for m in batch], [10])
+
+    def test_marker_fingerprint_mismatch_means_direct(self):
+        self.marker(age_s=1)                                    # token_fp "x"
+        os.environ["TELEGRAM_BOT_TOKEN"] = "111:rotated"
+        try:
+            self.assertFalse(telegram.ingress_mode())
+            (self.state_dir / "ingress.json").write_text(json.dumps(
+                {"updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+                 "token_fp": telegram.token_fp("111:rotated")}))
+            self.assertTrue(telegram.ingress_mode())
+        finally:
+            os.environ.pop("TELEGRAM_BOT_TOKEN", None)
+
+    def test_unreadable_spool_dir_exits_nonzero(self):
+        os.environ["TICKET_LOOP_INGRESS"] = "1"
+        (self.state_dir / "inbox").write_text("not a directory")
+        with self.assertRaises(SystemExit):
+            self.run_peek()
+
+    def test_spool_poll_timeout_waits_then_returns_empty(self):
+        os.environ["TICKET_LOOP_INGRESS"] = "1"
+        ticks = iter([0, 1, 2, 3, 30, 31, 32])
+        orig = telegram.time.monotonic
+        telegram.time.monotonic = lambda: next(ticks)
+        try:
+            self.assertEqual(self.run_poll(timeout=3), [])
+        finally:
+            telegram.time.monotonic = orig
+        self.assertEqual(self.api_calls, [])
+
+    def test_direct_mode_drains_leftover_spool_then_polls(self):
+        self.spool(10)
+        self._api_result = [{"update_id": 200, "message": {
+            "message_id": 200, "chat": {"id": -100777},
+            "from": {"is_bot": False, "username": "u", "id": 9}, "text": "later"}}]
+        out = self.run_poll()
+        self.assertEqual([m["message_id"] for m in out], [10, 200])
+        self.assertEqual(self.api_calls[0][0], "getUpdates")
+        self.assertEqual(self.api_calls[0][1]["offset"], 100)
+        self.assertEqual(self.inbox_names(), ["10.done"])
+        self.assertEqual(json.loads(self.state_path.read_text())["offset"], 201)
+
+    def test_spool_peek_is_local(self):
+        os.environ["TICKET_LOOP_INGRESS"] = "1"
+        self.spool(10); self.spool(11, chat="-42"); self.spool(12, bot=True)
+        self.assertEqual(self.run_peek(), "1")
+        self.assertEqual(self.api_calls, [])
+        self.assertEqual(self.inbox_names(), ["10.json", "11.json", "12.json"])   # read-only
+
+    def test_ingress_verb(self):
+        self.marker(age_s=5); self.spool(10)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            telegram.cmd_ingress(argparse.Namespace(mode=True))
+        self.assertEqual(buf.getvalue().strip(), "spool")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            telegram.cmd_ingress(argparse.Namespace(mode=False))
+        rep = json.loads(buf.getvalue())
+        self.assertEqual((rep["mode"], rep["fresh"], rep["pending"], rep["marker"]["tg_offset"]),
+                         ("spool", True, 1, 5))
+
+    def test_react_params(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            telegram.cmd_react(argparse.Namespace(message_id=42, emoji="👀", clear=False))
+        self.assertEqual(self.api_calls[-1][0], "setMessageReaction")
+        self.assertEqual(json.loads(self.api_calls[-1][1]["reaction"]), [{"type": "emoji", "emoji": "👀"}])
+        self.assertEqual(self.api_calls[-1][1]["message_id"], 42)
+        self.assertEqual(json.loads(buf.getvalue()), {"message_id": 42, "reaction": "👀"})
+        with contextlib.redirect_stdout(io.StringIO()):
+            telegram.cmd_react(argparse.Namespace(message_id=42, emoji="👍", clear=True))
+        self.assertEqual(json.loads(self.api_calls[-1][1]["reaction"]), [])
 
 
 class TestQEntryProjectContext(unittest.TestCase):

@@ -84,7 +84,7 @@ RUN set -eux; \
 # is owned by root and the container runs as the non-root `agent` user, so a build
 # subagent physically cannot edit the framework driving it.
 COPY skills/ticket-loop/cron-run.sh \
-     skills/ticket-loop/orchestrator/telegram-wake.py \
+     skills/ticket-loop/orchestrator/telegram-ingress.py \
      skills/ticket-loop/run-pass.sh \
      skills/ticket-loop/loop-lock.sh \
      skills/ticket-loop/telegram.py \

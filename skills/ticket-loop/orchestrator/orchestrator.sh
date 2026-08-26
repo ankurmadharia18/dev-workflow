@@ -36,6 +36,11 @@
 #
 # Control surface: `touch <ORCH_STATE_DIR>/run-now` (optionally echo a project
 # name into it) forces the next turn to run that project, pre-check bypassed.
+# `<ORCH_STATE_DIR>/run-now.d/<project>` is the Telegram ingress's wake (one slot
+# per tenant, eligibility-only: honors window/memory/parking, skips the ladder).
+#   ORCH_TELEGRAM_INGRESS=0  disable the ingress daemon (passes then poll Telegram
+#                            directly, the pre-v0.7 behaviour); ORCH_TELEGRAM_WAKE
+#                            is honored as the old name
 set -uo pipefail
 
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -62,7 +67,9 @@ ROSTER="${ORCH_ROSTER:-/home/agent/roster.yml}"
 ORCH_STATE_DIR="${ORCH_STATE_DIR:-$(dirname "$ROSTER")/orch}"
 mkdir -p "$ORCH_STATE_DIR"
 STATE_FILE="$ORCH_STATE_DIR/orch-state.json"
-RUN_NOW_FILE="$ORCH_STATE_DIR/run-now"
+RUN_NOW_FILE="$ORCH_STATE_DIR/run-now"        # human force-run (highest priority)
+RUN_NOW_DIR="$ORCH_STATE_DIR/run-now.d"       # ingress wakes, one file per tenant
+mkdir -p "$RUN_NOW_DIR"
 
 # Orchestrator-level env file: ops alert channel + the shared default bot live
 # here instead of `docker run -e` flags. Explicit environment wins over the file.
@@ -186,15 +193,29 @@ run_with_timeout() {
   wait "$pid"
 }
 
-sleep_interruptible() {  # wake early on drain or a run-now touch
-  local remain="$1" chunk
+sleep_interruptible() {  # wake early on drain, a run-now touch, or a NEW ingress wake
+  local remain="$1" chunk stamp="$ORCH_STATE_DIR/.sleep-stamp"
+  # Only wakes created AFTER this sleep began count: a wake the scheduler just
+  # deferred (window closed, low memory) stays pending without spinning us.
+  touch "$stamp"
   while [ "$remain" -gt 0 ]; do
     [ "$DRAIN" = 1 ] && return 0
     [ -f "$RUN_NOW_FILE" ] && return 0
+    [ -n "$(find "$RUN_NOW_DIR" -type f -newer "$stamp" 2>/dev/null | head -1)" ] && return 0
     chunk=$(( remain > 30 ? 30 : remain ))
     sleep "$chunk"
     remain=$(( remain - chunk ))
   done
+}
+
+# Is the Telegram ingress daemon serving this state dir right now? Prints
+# `spool` (fresh <state>/ingress.json) or `direct`. Local files only.
+ingress_mode_for() {  # $1 env_file, $2 state_dir
+  local m=""
+  [ -n "$TELEGRAM" ] && m="$( ( set -a; . "$1"; set +a
+                               tg_fallback
+                               TICKET_LOOP_STATE_DIR="$2" python3 "$TELEGRAM" ingress --mode ) 2>/dev/null )"
+  case "$m" in spool) echo spool ;; *) echo direct ;; esac
 }
 
 # ── startup: roster validation (marker guard §8), crash write-ahead recovery
@@ -214,18 +235,56 @@ if [ -z "$RUN_PASS" ]; then
 fi
 log "orchestrator up — roster: ${PROJECTS:-?}"
 
-# ── event wake: telegram-wake.py long-polls each tenant's bot and touches the
-# run-now file on a message, so pickup is seconds instead of the ladder's
-# minutes. Optional (ORCH_TELEGRAM_WAKE=0 disables; absent script = skipped).
-# A daemon child: sleep_interruptible sees the run-now touch; SIGTERM drain
-# kills it with the container (no state to hand over — it never acks updates).
-WAKE_PY="$HERE/telegram-wake.py"
-WAKE_PID=""
-if [ "${ORCH_TELEGRAM_WAKE:-1}" = 1 ] && [ -f "$WAKE_PY" ]; then
-  $PY "$WAKE_PY" --roster "$ROSTER" --run-now-file "$RUN_NOW_FILE" &
-  WAKE_PID=$!
-  log "telegram-wake up (pid $WAKE_PID)"
+# ── Telegram ingress: telegram-ingress.py is the SOLE getUpdates consumer for
+# every rostered bot — it spools each human message to the tenant's
+# <state>/inbox/, reacts 👀, and drops a wake in run-now.d/, so intake is
+# seconds regardless of whether a pass is mid-build (the pass drains the spool
+# at its next re-drain point instead of polling Telegram). Supervised by its
+# own subshell, INDEPENDENT of the turn loop (which blocks for a whole pass):
+# any exit restarts it — rc≠0 pages ops on the first and every 10th restart —
+# and a roster edit makes it exit 0 to reload. The EXIT trap stops it with us.
+INGRESS_PY="$HERE/telegram-ingress.py"
+INGRESS_STOP="$ORCH_STATE_DIR/.ingress-stop"
+INGRESS_READY="$ORCH_STATE_DIR/.ingress-ready"
+INGRESS_SUP_PID=""
+INGRESS_ENABLED=0
+rm -f "$INGRESS_STOP" "$INGRESS_READY"
+if [ "${ORCH_TELEGRAM_INGRESS:-${ORCH_TELEGRAM_WAKE:-1}}" = 1 ] && [ -f "$INGRESS_PY" ]; then
+  INGRESS_ENABLED=1
+  ( restarts=0
+    while [ ! -f "$INGRESS_STOP" ]; do
+      started=$(date +%s)
+      $PY "$INGRESS_PY" --roster "$ROSTER" --run-now-dir "$RUN_NOW_DIR" --ready-file "$INGRESS_READY"
+      rc=$?
+      [ -f "$INGRESS_STOP" ] && break
+      ran=$(( $(date +%s) - started ))
+      if [ "$rc" = 0 ]; then
+        log "telegram-ingress exited (roster reload) after ${ran}s — restarting"
+        sleep 2
+        continue
+      fi
+      restarts=$((restarts + 1))
+      log "telegram-ingress died rc=$rc after ${ran}s — restart #$restarts"
+      if [ "$restarts" -eq 1 ] || [ $((restarts % 10)) -eq 0 ]; then
+        ops_alert "telegram-ingress died (rc=$rc after ${ran}s, restart #$restarts) — inbound Telegram is degraded; see docker logs"
+      fi
+      [ "$ran" -lt 60 ] && sleep 30 || sleep 5
+    done ) &
+  INGRESS_SUP_PID=$!
+  log "telegram-ingress supervisor up (pid $INGRESS_SUP_PID)"
+  # Readiness handoff: the first turn derives each pass's mode from the daemon's
+  # markers — wait (bounded) until they exist, or a pass could start in direct
+  # mode against a bot the daemon is about to consume.
+  for _i in $(seq 1 30); do [ -f "$INGRESS_READY" ] && break; sleep 1; done
+  [ -f "$INGRESS_READY" ] && log "telegram-ingress ready" || log "WARN: telegram-ingress not ready after 30s — passes fall back to direct polling until its markers appear"
 fi
+stop_ingress() {
+  [ -n "$INGRESS_SUP_PID" ] || return 0
+  touch "$INGRESS_STOP"
+  pkill -TERM -P "$INGRESS_SUP_PID" 2>/dev/null
+  kill "$INGRESS_SUP_PID" 2>/dev/null
+}
+trap stop_ingress EXIT
 
 TURN=0
 while :; do
@@ -242,14 +301,22 @@ while :; do
   if [ -f "$RUN_NOW_FILE" ]; then
     RUN_NOW_ARGS=(--run-now "$(head -1 "$RUN_NOW_FILE" 2>/dev/null | tr -d '[:space:]')")
   fi
+  # ALL pending ingress wakes, oldest first (ls -tr) — the scheduler picks the
+  # first runnable one, so a deferred tenant never blocks the others.
+  WAKES="$(ls -tr "$RUN_NOW_DIR" 2>/dev/null | paste -sd, - 2>/dev/null)"
+  [ -n "$WAKES" ] && RUN_NOW_ARGS+=(--inbox-wakes "$WAKES")
   if ! DECISION_SH="$($PY "$ORCH_PY" next --sh --roster "$ROSTER" --state "$STATE_FILE" \
                        ${RUN_NOW_ARGS[@]+"${RUN_NOW_ARGS[@]}"})"; then
     log "WARN: orch.py next failed — retrying in 60s"
     sleep 60
     continue
   fi
+  WAKE_KIND="" WAKE_NAME="" DROP_WAKES=""
   eval "$DECISION_SH"
   [ "${CONSUME_RUN_NOW:-0}" = 1 ] && rm -f "$RUN_NOW_FILE"
+  for _w in $DROP_WAKES; do rm -f "$RUN_NOW_DIR/$_w"; done   # unknown/paused/parked
+  RUN_NOW_PATH=""
+  [ -n "$WAKE_NAME" ] && RUN_NOW_PATH="$RUN_NOW_DIR/$WAKE_NAME"
 
   if [ "$ACTION" = "sleep" ]; then
     log "sleep ${SLEEP_S}s — $REASON"
@@ -278,10 +345,29 @@ while :; do
   if [ -n "$LOCK_SH" ] && TICKET_LOOP_STATE_DIR="$STATE_DIR" bash "$LOCK_SH" status >/dev/null 2>&1; then
     log "$PROJECT: singleton lock held (interactive session?) — requeue"
     record skipped-lock
-    continue
+    continue      # an inbox wake stays pending; the scheduler skips a locked tenant
   fi
+  # The wake is consumed here, once the lock check passed. If the runner still
+  # yields the lock (a session grabbed it in between), classify re-signals it.
+  [ -n "$RUN_NOW_PATH" ] && rm -f "$RUN_NOW_PATH"
 
-  if [ "${PRECHECK:-0}" = 1 ]; then
+  INGRESS_MODE=direct
+  [ "$INGRESS_ENABLED" = 1 ] && INGRESS_MODE="$(ingress_mode_for "$ENV_FILE" "$STATE_DIR")"
+
+  if [ "$WAKE_KIND" = inbox ]; then
+    # The message that raised this wake may already be drained: a pass that was
+    # running when it arrived re-drains the spool after every send. Peek is a
+    # local file count here (no network, no secrets) — a non-numeric answer
+    # (peek failed) FAILS OPEN to a pass rather than hiding a broken spool.
+    PK="$( ( set -a; . "$ENV_FILE"; set +a
+             tg_fallback
+             TICKET_LOOP_INGRESS=1 TICKET_LOOP_STATE_DIR="$STATE_DIR" python3 "$TELEGRAM" peek ) 2>&1 )"
+    case "$PK" in
+      0)           log "wake $PROJECT: spool already drained by the last pass — skipping"; continue ;;
+      ''|*[!0-9]*) log "wake $PROJECT: peek failed (${PK:0:100}) — running the pass (fail open)" ;;
+      *)           log "wake $PROJECT: $PK spooled message(s) — running pass" ;;
+    esac
+  elif [ "${PRECHECK:-0}" = 1 ]; then
     # Cheap pre-check (spec §3): queue depth + read-only peek. Open questions
     # are deliberately NOT a signal: an answer a human sent is an unconsumed
     # update the peek sees, so "questions still open" alone means nobody has
@@ -300,9 +386,14 @@ while :; do
     if [ "$SIGNAL" = 0 ] && [ -n "$TELEGRAM" ]; then
       PK="$( ( set -a; . "$ENV_FILE"; set +a
                tg_fallback
-               TICKET_LOOP_STATE_DIR="$STATE_DIR" python3 "$TELEGRAM" peek ) 2>/dev/null || echo 0 )"
-      case "$PK" in (*[!0-9]*|'') PK=0 ;; esac
-      [ "$PK" -gt 0 ] && { SIGNAL=1; WHY="$PK unread group message(s)"; }
+               TICKET_LOOP_INGRESS="$([ "$INGRESS_MODE" = spool ] && echo 1 || echo 0)" \
+               TICKET_LOOP_STATE_DIR="$STATE_DIR" python3 "$TELEGRAM" peek ) 2>&1 )"
+      case "$PK" in
+        '')          : ;;
+        *[!0-9]*)    SIGNAL=1; WHY="peek failed, failing open: ${PK:0:120}" ;;
+        0)           : ;;
+        *)           SIGNAL=1; WHY="$PK unread group message(s)" ;;
+      esac
     fi
     if [ "$SIGNAL" = 0 ]; then
       log "pre-check $PROJECT: idle (queue 0, no pending messages) — skipping pass"
@@ -326,9 +417,14 @@ while :; do
   # DW_ORCHESTRATED=1 tells cron-run.sh that escalation is the orchestrator's job
   # (its existing threshold path) — so the pass does NOT page ops itself. Only
   # single-mode timers (flag unset) self-page. It carries no secret.
+  # TICKET_LOOP_INGRESS is decided HERE, per pass, from the daemon's liveness
+  # marker in this tenant's state dir — 1: the pass drains the spool and never
+  # calls getUpdates; 0: no daemon serves this tenant (no bot/chat in its env,
+  # ingress disabled or down), so the pass polls Telegram directly as before.
   ENV_ARGS=( HOME="$HOME" PATH="$PATH" LANG="${LANG:-C.UTF-8}"
              DW_ENV_FILE="$ENV_FILE" DW_WORK_TREE="$WORK_TREE"
-             TICKET_LOOP_STATE_DIR="$STATE_DIR" DW_ORCHESTRATED=1 )
+             TICKET_LOOP_STATE_DIR="$STATE_DIR" DW_ORCHESTRATED=1
+             TICKET_LOOP_INGRESS="$([ "$INGRESS_MODE" = spool ] && echo 1 || echo 0)" )
   [ -n "${MODEL:-}" ]                  && ENV_ARGS+=( TICKET_LOOP_MODEL="$MODEL" )
   [ -n "${PROJECT_TZ:-}" ]             && ENV_ARGS+=( TICKET_LOOP_TZ="$PROJECT_TZ" )
   # Per-entry mode (roster overrides the repo's own agent.*): which skill the pass
@@ -359,5 +455,9 @@ while :; do
     || CLASSIFY_OUT="error classify itself failed"
   CLASS="${CLASSIFY_OUT%% *}"
   log "classify $PROJECT: $CLASSIFY_OUT"
+  if [ "$CLASS" = skipped-lock ] && [ "$WAKE_KIND" = inbox ]; then
+    echo inbox > "$RUN_NOW_DIR/$PROJECT"     # the runner yielded: the wake is still owed
+    log "wake $PROJECT: re-signalled (runner yielded the lock)"
+  fi
   record "$CLASS"
 done
