@@ -1,7 +1,7 @@
 {
   "name": "dev-workflow",
   "description": "CI, but for ticket work: worktree/standup/cleanup/release/blog-from-session/setup session skills + the opt-in ticket-loop agent, in three tiers (v1 local dev, v2 local agent, v3 remote runner), configured per-repo by dev-workflow.yml",
-  "version": "0.6.8",
+  "version": "0.6.9",
   "author": {
     "name": "HCode Technologies"
   },
