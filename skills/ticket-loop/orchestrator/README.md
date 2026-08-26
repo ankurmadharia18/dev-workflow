@@ -21,7 +21,13 @@ Design: `docs/superpowers/specs/2026-07-11-ticket-loop-orchestrator-design.md`.
 ## How a turn works
 
 ```
-orch.py next            → run <project>, or sleep to min(next_eligible)
+telegram-ingress.py     → (always on, beside the turn loop) the ONLY getUpdates
+                          consumer: spools each human message to the tenant's
+                          <state>/inbox/, reacts 👀, drops a wake in run-now.d/
+orch.py next            → run <project>, or sleep to min(next_eligible);
+                          an ingress wake runs its tenant now (ladder skipped;
+                          window/memory/parking still honored) unless the spool
+                          is already drained
   memory gate           → MemAvailable < 2.5 GiB? skip turn (short requeue)
   window                → roster window ∩ repo schedule.window (skip ≠ ladder)
 pre-check (adaptive)    → queue-count.py (Linear depth) + telegram.py peek
@@ -45,6 +51,50 @@ answer faster); **error** counts a streak and escalates at 3; a crash-looping
 project is parked for 12h after 3 consecutive crashes. A forced full pass runs
 every 8h per project regardless of pre-check, so pre-check drift can never
 silently starve a board.
+
+## Telegram ingress — intake is not the pass
+
+The team's read of "is the bot alive" is the seconds after they hit send, not
+the pass that happens later. So message intake is its own always-on process,
+`telegram-ingress.py`, supervised by `orchestrator.sh` independently of the
+turn loop (which blocks for a whole pass):
+
+```
+human posts ──▶ getUpdates (ingress, sole consumer per bot)
+                 ├─ <state>/inbox/<update_id>.json   spooled (tmp + rename), media/ fetched
+                 ├─ 👀 reaction on the message         "received" — within a second
+                 ├─ <orch>/run-now.d/<tenant>          wake (one slot per tenant)
+                 └─ <state>/ingress.json               liveness + cursor, bound to the bot
+pass (TICKET_LOOP_INGRESS=1) ──▶ telegram.py poll reads inbox/, renames .json → .done
+                                  agent acts, then telegram.py react <id> 👍  "handled"
+ingress GC ──▶ .done + its media deleted after 48h
+```
+
+What this buys: a message sent mid-build is acked instantly and is waiting in the
+spool when the pass re-drains after its next `send`; `peek` is a free local count;
+a shared bot (`DEFAULT_TELEGRAM_BOT_TOKEN`) routes every group to its tenant with
+normal acks — the no-ack scan-window caveat below only applies when the ingress
+is off. Every roster entry with a chat id is routed, **enabled or not**, so a
+paused tenant's messages queue in its spool instead of expiring.
+
+Rules it enforces (see the file's docstring for the why): never ack an update
+that isn't on disk (the cursor holds at the first spool failure); redelivery is
+deduped by file presence, not by `update_id` arithmetic (Telegram may pick ids
+randomly after a week idle); a chat two tenants claim on one bot refuses that
+bot entirely (nothing acked, nothing lost within Telegram's 24h); five
+consecutive `409 Conflict`s (a second consumer — a stale container from an
+interrupted deploy, or a webhook) exit the daemon and the supervisor pages ops;
+any worker thread death restarts the whole daemon; a roster edit reloads it.
+
+Per pass, the orchestrator sets `TICKET_LOOP_INGRESS=1` only when this tenant's
+`ingress.json` is fresh (< 5 min) — otherwise `0`, and the pass polls Telegram
+directly as single-mode does (a tenant without a bot/chat in its env file, or the
+daemon being down). `telegram.py ingress` reports the mode and the pending count
+for any state dir. `ORCH_TELEGRAM_INGRESS=0` turns the daemon off.
+
+Interactive gotcha: while the daemon owns a bot, any other `getUpdates` on that
+token — a laptop `telegram.py poll` against the same bot, `discover` — 409s one
+side. Use a different bot for laptop experiments, or stop the orchestrator first.
 
 ## Updating a live deployment (`deploy.sh`)
 
@@ -386,12 +436,14 @@ The loop is tracker-driven; a project can't be round-robined until it has:
    - **Shared default (the easy path):** with `DEFAULT_TELEGRAM_BOT_TOKEN` set
      in `orch.env`, a project needs no bot of its own — leave `TELEGRAM_BOT_TOKEN`
      out of its env file, add the default bot to the new group, set
-     `AGENT_TELEGRAM_CHAT_ID`, done. The orchestrator injects the shared bot in
-     **no-ack mode** (`telegram.py` never sends a getUpdates offset — a shared
-     stream acked by one project deletes the siblings' pending messages; it
-     filters by chat id + a local floor instead). Trade-off: no-ack mode scans
-     only Telegram's first ~100 unacked updates and Telegram retains updates
-     ~24h, so this is right for low-traffic groups, not busy ones.
+     `AGENT_TELEGRAM_CHAT_ID`, done. With the ingress on (the default) the daemon
+     consumes the shared bot once and routes each group to its tenant with normal
+     acks — no scan-window limit. With the ingress OFF the orchestrator injects
+     the shared bot in **no-ack mode** (`telegram.py` never sends a getUpdates
+     offset — a shared stream acked by one project deletes the siblings' pending
+     messages; it filters by chat id + a local floor instead); that mode scans
+     only Telegram's first ~100 unacked updates, so it suits low-traffic groups
+     only.
    - **Dedicated (`TELEGRAM_BOT_TOKEN` in the project's env file):** the project
      owns the bot's whole getUpdates queue, so it acks normally — no scan-window
      limit. Use this for a high-traffic group, or any bot already used elsewhere.

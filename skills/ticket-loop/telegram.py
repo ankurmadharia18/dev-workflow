@@ -9,8 +9,14 @@ Subcommands:
                                       reply with a Linear Project (multi-repo routing without a tracker
                                       read). --context records a PRE-TICKET question (ticket=None, e.g.
                                       a "which project?" clarifier) so a plain reply routes back to it.
-  poll [--timeout N]                  Long-poll getUpdates (default 25s); prints one JSON line per
-                                      new human message in the agent group:
+  poll [--timeout N]                  Fetch new human messages in the agent group; prints one JSON
+                                      line per message. Under the orchestrator's Telegram INGRESS
+                                      (TICKET_LOOP_INGRESS=1, or a fresh <state>/ingress.json) the
+                                      ingress daemon is the only getUpdates consumer: poll reads the
+                                      spool <state>/inbox/<update_id>.json, consumes each record by
+                                      renaming it .done, and never touches the network for inbound.
+                                      Otherwise (single-mode timer, laptop) it long-polls getUpdates
+                                      itself (default 25s). Either way the output line is:
                                       {message_id, from, from_id, text, ticket, project, context,
                                        reply_to_message_id, media_path}
                                       `ticket`/`project`/`context` come from the replied-to question
@@ -20,14 +26,24 @@ Subcommands:
                                       Photos (and image documents) are downloaded to
                                       <repo>/.agent-loop/media/<message_id>.<ext>; `media_path` carries
                                       the local path (null for text-only messages), `text` the caption.
-  peek                                Count pending human messages WITHOUT consuming the
-                                      getUpdates offset (read-only; the orchestrator pre-check).
+  peek                                Count pending human messages WITHOUT consuming them
+                                      (read-only; the orchestrator pre-check). Spool mode: a local
+                                      file count, no network.
+  ingress [--mode]                    Report whether this state dir is ingress-served: JSON
+                                      {mode: spool|direct, marker, pending}; --mode prints just the
+                                      word (the orchestrator sets TICKET_LOOP_INGRESS from it).
   send-photo [--ticket ABC-123] [--caption TEXT] <path>
                                       Send an image file to the agent group; prints {"message_id": N}.
   send-document [--caption TEXT] <path>
                                       Send a file (e.g. a PDF report) to the agent group; prints {"message_id": N}.
+  react [--clear] <message_id> [EMOJI]
+                                      Set (or clear) the bot's emoji reaction on a group message — the
+                                      visible "seen / handled" ack (default 👍). Only Telegram's fixed
+                                      reaction set is accepted (👀 👍 🔥 🎉 … — ✅ is NOT in it).
   discover                            Print every chat the bot has recently seen (id, type, title) —
-                                      use to grab a new group's chat id. Does not consume updates.
+                                      use to grab a new group's chat id. Does not consume updates
+                                      (but 409s while a live ingress long-polls the same bot — run
+                                      it before the bot is rostered, or briefly stop the orchestrator).
 
 Env (from the environment or repo-root .env): TELEGRAM_BOT_TOKEN, AGENT_TELEGRAM_CHAT_ID.
 TELEGRAM_SHARED_BOT=1 switches poll/peek to shared-bot (no-ack) mode: the bot token
@@ -268,60 +284,197 @@ def match_ticket(msg: dict, questions: dict):
     return prefix.group(1).upper() if prefix else None
 
 
+INGRESS_FRESH_S = 300   # a marker older than this means no ingress is serving this state dir
+
+
+def ingress_marker():
+    """The ingress daemon's <state>/ingress.json, or None."""
+    try:
+        return json.loads((STATE_PATH.parent / "ingress.json").read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def ingress_fresh(marker, now=None) -> bool:
+    """True when the marker was refreshed within INGRESS_FRESH_S (the daemon rewrites
+    it after every long-poll, i.e. every ~20s while healthy)."""
+    if not marker:
+        return False
+    try:
+        ts = datetime.datetime.fromisoformat(str(marker.get("updated_at")).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    now = now if now is not None else time.time()
+    return 0 <= now - ts.timestamp() < INGRESS_FRESH_S
+
+
+def token_fp(token: str) -> str:
+    import hashlib
+    return hashlib.sha256(token.encode()).hexdigest()[:12]
+
+
+def ingress_serving(marker=None) -> bool:
+    """Is a live ingress daemon serving THIS bot in this state dir? Fresh marker,
+    and — when our token is known — the marker's bot fingerprint matches it (a
+    rotated token must poll directly, not wait on a daemon serving the old bot)."""
+    marker = ingress_marker() if marker is None else marker
+    if not ingress_fresh(marker):
+        return False
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    return not token or marker.get("token_fp") == token_fp(token)
+
+
+def ingress_mode() -> bool:
+    """Spool mode? TICKET_LOOP_INGRESS=1/0 is authoritative (the orchestrator sets
+    it per pass from the same check, so a pass never flips mid-run); unset →
+    auto: a live daemon serving this bot owns its getUpdates, and a direct poll
+    from here would 409 one of the two."""
+    v = os.environ.get("TICKET_LOOP_INGRESS", "").strip().lower()
+    if v in ("1", "true", "yes"):
+        return True
+    if v in ("0", "false", "no"):
+        return False
+    return ingress_serving()
+
+
+def read_spool() -> list:
+    """Every parsable pending spool record, oldest first: [(path, record)].
+    Unparsable files are left alone with a warning — they are the daemon's to
+    fix, never silently dropped."""
+    d = STATE_PATH.parent / "inbox"
+    out = []
+    try:
+        paths = [p for p in d.iterdir() if p.suffix == ".json" and p.stem.isdigit()]
+    except FileNotFoundError:
+        return out                       # no spool yet: genuinely nothing pending
+    except OSError as exc:               # unreadable ≠ empty: let the caller fail OPEN
+        sys.exit(f"error: cannot read the ingress spool {d}: {exc}")
+    for path in paths:
+        try:
+            rec = json.loads(path.read_text())
+            if not isinstance(rec.get("message"), dict):
+                raise ValueError("no message")
+        except (OSError, ValueError, AttributeError):
+            print(f"warning: unreadable spool record {path.name} — left for the ingress", file=sys.stderr)
+            continue
+        out.append((path, rec))
+    out.sort(key=lambda pr: (str(pr[1].get("received_at") or ""), int(pr[0].stem)))
+    return out
+
+
+def spooled_records(chat_id: str, records=None) -> list:
+    """The pending records that are this group's human messages. Anything else
+    (another chat — the tenant's group changed — or a bot post) is neither
+    emitted nor consumed: it stays in place with a warning, never silently
+    discarded; a human decides."""
+    records = read_spool() if records is None else records
+    mine = [(p, r) for p, r in records
+            if str((r["message"].get("chat") or {}).get("id")) == chat_id
+            and not (r["message"].get("from") or {}).get("is_bot")]
+    if len(mine) != len(records):
+        print(f"warning: {len(records) - len(mine)} spool record(s) for another chat/bot left "
+              f"in {STATE_PATH.parent / 'inbox'} — inspect (did the group change?)", file=sys.stderr)
+    return mine
+
+
+def consume_records(paths) -> set:
+    """Mark spool records consumed: <id>.json → <id>.done, mtime reset so the
+    ingress's 48h GC counts from consumption, not arrival. Returns the paths
+    that could NOT be consumed — the caller must not emit those (they would be
+    emitted again next poll: double-processing)."""
+    failed = set()
+    for path in paths:
+        done = path.with_suffix(".done")
+        try:
+            os.replace(path, done)
+            os.utime(done, None)
+        except OSError as exc:
+            print(f"warning: could not consume spool record {path.name}: {exc} — not emitted",
+                  file=sys.stderr)
+            failed.add(path)
+    return failed
+
+
+def emit_record(msg: dict, questions: dict, media_path=None) -> dict:
+    """The poll output line for one human message (shared by both modes)."""
+    sender = msg.get("from", {})
+    rid, entry = resolve_reply(msg, questions)
+    if entry is not None:
+        # A reply consumes its question entry, and carries the project/context
+        # recorded at ask time (routes without a tracker read; a pre-ticket
+        # disambiguation reply has ticket=None but a context).
+        ticket, project, context = _q_ticket(entry), _q_project(entry), _q_context(entry)
+        questions.pop(rid, None)
+    else:
+        prefix = TICKET_RE.match(msg.get("text") or msg.get("caption") or "")
+        ticket = prefix.group(1).upper() if prefix else None
+        project = context = None
+    return {
+        "message_id": msg["message_id"],
+        # username is display-level; from_id is the stable identity — record
+        # from_id in any audit trail (e.g. mirrored Linear comments).
+        "from": sender.get("username") or sender.get("first_name") or "unknown",
+        "from_id": sender.get("id"),
+        "text": msg.get("text") or (msg.get("caption") or ""),
+        "ticket": ticket,
+        "project": project,       # Linear Project for repo routing (or None)
+        "context": context,       # pre-ticket disambiguation payload (or None)
+        "reply_to_message_id": (msg.get("reply_to_message") or {}).get("message_id"),
+        "media_path": (media_path if media_path and os.path.exists(media_path)
+                       else download_media(msg)),
+    }
+
+
 def cmd_poll(args: argparse.Namespace) -> None:
     chat_id = require_env("AGENT_TELEGRAM_CHAT_ID")
     state = load_state()
     questions = state.setdefault("questions", {})
     shared = shared_bot()
+    spool = ingress_mode()
     started = time.monotonic()
-    params = {"timeout": args.timeout, "allowed_updates": '["message"]'}
-    if not shared:
-        params["offset"] = state.get("offset", 0)
-    updates = api("getUpdates", params, http_timeout=args.timeout + 15)
-    floor = state.get("offset", 0)
-    emitted = []
-    for update in updates:
-        if shared and update["update_id"] < floor:
-            continue  # scanned (and skipped or processed) in an earlier no-ack pass
-        state["offset"] = update["update_id"] + 1
-        msg = update.get("message")
-        if not msg or str(msg.get("chat", {}).get("id")) != chat_id:
-            continue
-        sender = msg.get("from", {})
-        if sender.get("is_bot"):
-            continue
-        rid, entry = resolve_reply(msg, questions)
-        if entry is not None:
-            # A reply consumes its question entry, and carries the project/context
-            # recorded at ask time (routes without a tracker read; a pre-ticket
-            # disambiguation reply has ticket=None but a context).
-            ticket, project, context = _q_ticket(entry), _q_project(entry), _q_context(entry)
-            questions.pop(rid, None)
-        else:
-            prefix = TICKET_RE.match(msg.get("text") or msg.get("caption") or "")
-            ticket = prefix.group(1).upper() if prefix else None
-            project = context = None
-        emitted.append({
-            "message_id": msg["message_id"],
-            # username is display-level; from_id is the stable identity — record
-            # from_id in any audit trail (e.g. mirrored Linear comments).
-            "from": sender.get("username") or sender.get("first_name") or "unknown",
-            "from_id": sender.get("id"),
-            "text": msg.get("text") or (msg.get("caption") or ""),
-            "ticket": ticket,
-            "project": project,       # Linear Project for repo routing (or None)
-            "context": context,       # pre-ticket disambiguation payload (or None)
-            "reply_to_message_id": (msg.get("reply_to_message") or {}).get("message_id"),
-            "media_path": download_media(msg),
-        })
-    # Crash-recovery affordance: the batch is persisted before the offset commit,
-    # so a consumer that dies mid-processing can re-read what the advanced offset
-    # would otherwise have swallowed.
+    emitted, updates = [], []
+    # 1. The spool — ALWAYS drained first, in both modes, so records the ingress
+    #    wrote before a mode flip (daemon stopped, laptop run) are never stranded.
+    everything = read_spool()
+    records = spooled_records(chat_id, everything)
+    if spool and not records and args.timeout > 0:
+        # Long-poll equivalent: wait for the spool to grow, then re-read once.
+        deadline = started + args.timeout
+        while time.monotonic() < deadline and not records:
+            time.sleep(1)
+            everything = read_spool()
+            records = spooled_records(chat_id, everything)
+    # Consume BEFORE emitting: a record whose rename fails is not emitted (it
+    # will be next time), so nothing is ever acted on twice.
+    failed = consume_records([path for path, _ in records])
+    for path, rec in records:
+        if path not in failed:
+            emitted.append(emit_record(rec["message"], questions, rec.get("media_path")))
+    # 2. Direct getUpdates — only when nothing owns this bot's update stream.
+    if not spool:
+        params = {"timeout": args.timeout, "allowed_updates": '["message"]'}
+        if not shared:
+            params["offset"] = state.get("offset", 0)
+        updates = api("getUpdates", params, http_timeout=args.timeout + 15)
+        floor = state.get("offset", 0)
+        for update in updates:
+            if shared and update["update_id"] < floor:
+                continue  # scanned (and skipped or processed) in an earlier no-ack pass
+            state["offset"] = update["update_id"] + 1
+            msg = update.get("message")
+            if not msg or str(msg.get("chat", {}).get("id")) != chat_id:
+                continue
+            if (msg.get("from") or {}).get("is_bot"):
+                continue
+            emitted.append(emit_record(msg, questions))
+    # Crash-recovery affordance: the batch is persisted before the offset commit /
+    # spool consumption, so a consumer that dies mid-processing can re-read what
+    # would otherwise have been swallowed.
     batch_path = STATE_PATH.parent / "last-batch.json"
     batch_path.parent.mkdir(parents=True, exist_ok=True)
     batch_path.write_text(json.dumps(emitted, ensure_ascii=False, indent=2) + "\n")
     save_state(state)
-    if shared and updates and not emitted and args.timeout > 0:
+    if not spool and shared and updates and not emitted and args.timeout > 0:
         # In no-ack mode a permanently-pending foreign update makes getUpdates
         # return instantly, so a caller's poll loop would spin; sleep out the
         # remainder of the requested long-poll window instead.
@@ -342,6 +495,9 @@ def cmd_peek(_args: argparse.Namespace) -> None:
     cron is decommissioned). In shared-bot mode the offset is never sent at all —
     the local floor filters instead (module docstring)."""
     chat_id = require_env("AGENT_TELEGRAM_CHAT_ID")
+    if ingress_mode():
+        print(len(spooled_records(chat_id)))   # local, free, and never 409s the daemon
+        return
     state = load_state()
     params = {"timeout": 0, "allowed_updates": '["message"]'}
     if not shared_bot():
@@ -575,6 +731,33 @@ def cmd_questions(args: argparse.Namespace) -> None:
     print(render_questions(questions, now))
 
 
+def cmd_ingress(args: argparse.Namespace) -> None:
+    """Is this state dir ingress-served? Reads only local files (no secrets, no
+    network). `--mode` prints just `spool` or `direct` for shell callers."""
+    marker = ingress_marker()
+    mode = "spool" if ingress_mode() else "direct"
+    if args.mode:
+        print(mode)
+        return
+    chat_id = os.environ.get("AGENT_TELEGRAM_CHAT_ID", "").strip()
+    pending = len(spooled_records(chat_id)) if chat_id else None
+    print(json.dumps({"mode": mode, "fresh": ingress_fresh(marker), "serving": ingress_serving(marker),
+                      "marker": marker, "pending": pending}, ensure_ascii=False))
+
+
+def cmd_react(args: argparse.Namespace) -> None:
+    """Set the bot's reaction on a group message (setMessageReaction), or clear it
+    with --clear. Idempotent — re-setting the same emoji is a no-op server-side.
+    The ingress reacts 👀 the second a message is spooled; the agent flips it to 👍
+    once it has acted on the message, so the group can see both stages."""
+    chat_id = require_env("AGENT_TELEGRAM_CHAT_ID")
+    reaction = [] if args.clear else [{"type": "emoji", "emoji": args.emoji}]
+    api("setMessageReaction", {"chat_id": chat_id, "message_id": args.message_id,
+                               "reaction": json.dumps(reaction, ensure_ascii=False)})
+    print(json.dumps({"message_id": args.message_id,
+                      "reaction": None if args.clear else args.emoji}, ensure_ascii=False))
+
+
 def cmd_discover(_args: argparse.Namespace) -> None:
     updates = api("getUpdates", {"timeout": 0}, http_timeout=15)
     seen = {}
@@ -610,6 +793,10 @@ def main() -> None:
     p_peek = sub.add_parser("peek", help="count pending group messages WITHOUT consuming the offset")
     p_peek.set_defaults(func=cmd_peek)
 
+    p_ing = sub.add_parser("ingress", help="report whether this state dir is served by the Telegram ingress")
+    p_ing.add_argument("--mode", action="store_true", help="print only `spool` or `direct`")
+    p_ing.set_defaults(func=cmd_ingress)
+
     p_photo = sub.add_parser("send-photo", help="send an image file to the agent group")
     p_photo.add_argument("--ticket", help="issue key this image belongs to (records reply matching)")
     p_photo.add_argument("--caption", help="caption to send with the image")
@@ -621,6 +808,13 @@ def main() -> None:
     p_doc.add_argument("--caption", help="caption to send with the document")
     p_doc.add_argument("path", help="path to the file to send")
     p_doc.set_defaults(func=cmd_send_document)
+
+    p_react = sub.add_parser("react", help="set (or clear) the bot's emoji reaction on a group message")
+    p_react.add_argument("--clear", action="store_true", help="remove the bot's reaction instead")
+    p_react.add_argument("message_id", type=int, help="the group message to react to")
+    p_react.add_argument("emoji", nargs="?", default="👍",
+                         help="reaction emoji from Telegram's fixed set (default 👍; 👀 = seen)")
+    p_react.set_defaults(func=cmd_react)
 
     p_q = sub.add_parser("questions", help="list / clear open clarifying questions (no Telegram, no secrets)")
     p_q.add_argument("--json", action="store_true", help="emit the raw entry list for the agent")

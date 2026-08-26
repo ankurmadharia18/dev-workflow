@@ -27,8 +27,13 @@ DW_ROOT="${DW_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 # AGENT_TELEGRAM_CHAT_ID, and optionally CLAUDE_CODE_OAUTH_TOKEN. The volume provides
 # the file; the unit points us at it via DW_ENV_FILE (default /home/agent/agent.env).
 DW_ENV_FILE="${DW_ENV_FILE:-/home/agent/agent.env}"
+# TICKET_LOOP_INGRESS is the ORCHESTRATOR's call (it knows whether the Telegram
+# ingress daemon is serving this tenant); a stale copy in the tenant's env file
+# must not override it and start a second getUpdates consumer.
+_dw_ingress="${TICKET_LOOP_INGRESS:-}"
 if [ -f "$DW_ENV_FILE" ]; then
   set -a; . "$DW_ENV_FILE"; set +a
+  [ -n "$_dw_ingress" ] && export TICKET_LOOP_INGRESS="$_dw_ingress"
 else
   echo "WARN: env file $DW_ENV_FILE not found — auth/secrets may be missing" >&2
 fi

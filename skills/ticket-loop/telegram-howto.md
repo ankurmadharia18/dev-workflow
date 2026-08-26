@@ -32,7 +32,9 @@ WHEN THE AGENT ASKS YOU SOMETHING
 • Answer by replying to that message, or start your text with ABC-123.
   Either way it routes to the ticket, unblocks it, and is mirrored onto the
   ticket as a comment.
-• ⚠️ Emoji reactions never reach the bot — a 👍 tap does nothing. Send text.
+• ⚠️ YOUR emoji reactions never reach the bot — a 👍 tap does nothing. Send text.
+• 👀 on your message = the bot received it (seconds); 👍 = it acted on it.
+  A reply follows the 👍. 👀 that never turns into 👍 = seen, nothing to do.
 
 ASK ABOUT THE CODE (creates no ticket)
 • question: <anything> — a read-only agent answers here with file:line refs

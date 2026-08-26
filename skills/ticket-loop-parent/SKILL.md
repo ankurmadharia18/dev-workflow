@@ -238,7 +238,9 @@ ephemeral — it creates no ticket; but like everything else here it still needs
 repo, so it routes in step 2. But here classification is not enough:
 **nothing mutates the tracker until step 2 has resolved the message to a
 repo.** Re-drain after every `telegram.py send`, same as the single-repo loop
-— draining is continuous, not just step 1.
+— draining is continuous, not just step 1. Reactions work the same way too:
+the ingress 👀-acks every message on arrival; once you have acted on one (after
+routing), `telegram.py react <message_id> 👍`; leave 👀 on chatter.
 
 ### 2. Route: message → repo, BEFORE any tracker mutation
 

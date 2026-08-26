@@ -29,6 +29,7 @@ State file (orch-state.json, atomic writes):
 import argparse
 import datetime
 import json
+import os
 import re
 import shlex
 import shutil
@@ -347,11 +348,74 @@ def _parked(ps, now):
     return bool(pu) and now < from_iso(pu)
 
 
-def pick_next(roster, st, now, mem_mb=None, run_now=None):
+def lock_held(state_dir):
+    """Is a ticket-loop singleton lock live in this state dir? Mirrors
+    loop-lock.sh: the lock is a dir; a readable owner pid that is alive holds it,
+    an unreadable owner is assumed live (conservative)."""
+    lock = Path(state_dir) / "loop.lock"
+    if not lock.is_dir():
+        return False
+    try:
+        pid = int((lock / "pid").read_text().strip())
+    except (OSError, ValueError):
+        return True
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def pick_next(roster, st, now, mem_mb=None, run_now=None, inbox_wakes=()):
     """Choose the next action. Read-only on `st` (record() owns all mutation) —
-    EXCEPT nothing: window skips deliberately do not touch backoff state."""
+    EXCEPT nothing: window skips deliberately do not touch backoff state.
+
+    run_now: a human touched the run-now file — run that project now, pre-check
+    and eligibility bypassed (only enabled/parked are honored).
+    inbox_wakes: tenants the Telegram ingress spooled a message for, oldest
+    first. An ELIGIBILITY signal, not a force: it bypasses only the ladder
+    (next_eligible); the memory floor, the work window, parking and a live
+    singleton lock still apply — ordinary chatter must never launch a pass the
+    policy would refuse. The first runnable wake runs; deferred ones (window,
+    memory, lock) stay pending so they fire when the gate opens and can't
+    starve the others; unknown/paused/parked ones are dropped (`drop_wakes`)."""
     cfg = roster["cfg"]
     projs = roster["projects"]
+    drop = []
+
+    def out(d):
+        d["drop_wakes"] = drop
+        return d
+
+    if run_now is None and inbox_wakes:
+        if mem_mb is not None and mem_mb < cfg["mem_floor_mb"]:
+            return out({"action": "sleep", "sleep_seconds": cfg["requeue_delay_s"],
+                        "reason": f"low memory: {mem_mb} MB available "
+                                  f"< {cfg['mem_floor_mb']} MB floor (inbox wakes kept)",
+                        "consume_run_now": False})
+        waits = []
+        for name in inbox_wakes:
+            target = next((p for p in projs if p["name"] == name), None)
+            if (target is None or not target.get("enabled", True)
+                    or _parked(st["projects"][target["name"]], now)):
+                drop.append(name)     # the spool keeps the message; the pre-check
+                continue              # peek sees it when the project is back
+            if lock_held(target["state_dir"]):
+                continue              # interactive session: keep the wake, try the next
+            wins, tz = windows_for(target)
+            wait = seconds_until_open(wins, tz, now)
+            if wait == 0:
+                return out({"action": "run", "project": target, "force_full": False,
+                            "precheck": False, "consume_run_now": False,
+                            "wake_kind": "inbox", "wake_name": name})
+            waits.append(86400 if wait is None else wait)
+        if waits:
+            return out({"action": "sleep", "sleep_seconds": max(30, min(int(min(waits)), 3600)),
+                        "reason": "inbox wake(s) outside their window (kept)",
+                        "consume_run_now": False})
+        # every wake was dropped (or lock-held): ordinary scheduling below
 
     if run_now is not None:
         target = next((p for p in projs if p["name"] == run_now), None)
@@ -359,17 +423,17 @@ def pick_next(roster, st, now, mem_mb=None, run_now=None):
             target = next((p for p in projs if p.get("enabled", True)), None)
         if (target is not None and target.get("enabled", True)
                 and not _parked(st["projects"][target["name"]], now)):
-            return {"action": "run", "project": target, "force_full": True,
-                    "precheck": False, "consume_run_now": True}
+            return out({"action": "run", "project": target, "force_full": True,
+                        "precheck": False, "consume_run_now": True})
         # unknown/paused/parked name: consume the file (driver deletes it) and fall through
 
     if mem_mb is not None and mem_mb < cfg["mem_floor_mb"]:
         # consume_run_now here too: an unknown-name run-now file that fell
         # through must still be deleted, or the driver busy-loops on it.
-        return {"action": "sleep", "sleep_seconds": cfg["requeue_delay_s"],
-                "reason": f"low memory: {mem_mb} MB available "
-                          f"< {cfg['mem_floor_mb']} MB floor",
-                "consume_run_now": run_now is not None}
+        return out({"action": "sleep", "sleep_seconds": cfg["requeue_delay_s"],
+                    "reason": f"low memory: {mem_mb} MB available "
+                              f"< {cfg['mem_floor_mb']} MB floor",
+                    "consume_run_now": run_now is not None})
 
     waits = []
     start = st.get("rr_next", 0) % len(projs)
@@ -397,13 +461,13 @@ def pick_next(roster, st, now, mem_mb=None, run_now=None):
         force_full = (lfp is None or
                       (now - from_iso(lfp)).total_seconds() >= cfg["force_full_every_s"])
         precheck = p["cadence"] == "adaptive" and not force_full
-        return {"action": "run", "project": p, "force_full": force_full,
-                "precheck": precheck,
-                "consume_run_now": run_now is not None}
+        return out({"action": "run", "project": p, "force_full": force_full,
+                    "precheck": precheck,
+                    "consume_run_now": run_now is not None})
     sleep_s = int(min(waits)) if waits else 60
-    return {"action": "sleep", "sleep_seconds": max(30, min(sleep_s, 3600)),
-            "reason": "no project eligible",
-            "consume_run_now": run_now is not None}
+    return out({"action": "sleep", "sleep_seconds": max(30, min(sleep_s, 3600)),
+                "reason": "no project eligible",
+                "consume_run_now": run_now is not None})
 
 
 def cmd_next(args):
@@ -411,12 +475,14 @@ def cmd_next(args):
     st = load_state(args.state)
     ensure_projects(st, roster["projects"])
     now = from_iso(args.now) if args.now else now_utc()
+    wakes = [w for w in (args.inbox_wakes or "").split(",") if w]
     d = pick_next(roster, st, now, mem_mb=mem_available_mb(),
-                  run_now=args.run_now)
+                  run_now=args.run_now, inbox_wakes=wakes)
     save_state(args.state, st)   # persists newly-ensured project entries
     if d["action"] == "sleep":
         emit(args, {"ACTION": "sleep", "SLEEP_S": d["sleep_seconds"],
                     "REASON": d["reason"],
+                    "DROP_WAKES": " ".join(d.get("drop_wakes") or []),
                     "CONSUME_RUN_NOW": 1 if d.get("consume_run_now") else 0})
         return 0
     p = d["project"]
@@ -428,6 +494,9 @@ def cmd_next(args):
                 "PRECHECK": 1 if d["precheck"] else 0,
                 "FORCE_FULL": 1 if d["force_full"] else 0,
                 "TIMEOUT_S": roster["cfg"]["pass_timeout_s"],
+                "WAKE_KIND": d.get("wake_kind") or "",
+                "WAKE_NAME": d.get("wake_name") or "",
+                "DROP_WAKES": " ".join(d.get("drop_wakes") or []),
                 "CONSUME_RUN_NOW": 1 if d.get("consume_run_now") else 0})
     return 0
 
@@ -815,6 +884,10 @@ def main(argv=None):
     p_next.add_argument("--run-now", default=None,
                         help="project name from the run-now trigger file "
                              "('' = first roster project)")
+    p_next.add_argument("--inbox-wakes", default="",
+                        help="comma-separated tenants with a pending Telegram ingress "
+                             "wake, oldest first (eligibility only: honors memory "
+                             "floor, window, parking, a live lock; bypasses the ladder)")
     p_next.set_defaults(func=cmd_next)
 
     p_cls = sub.add_parser("classify", help="classify a finished pass")
