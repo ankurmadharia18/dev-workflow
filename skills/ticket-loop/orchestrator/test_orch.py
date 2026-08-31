@@ -830,16 +830,26 @@ class TestSharedAuthEscalation(unittest.TestCase):
             self.assertIn("Claude settings", out["ESCALATE_PROJECT"])
             self.assertNotIn("claude.ai/", out["ESCALATE_PROJECT"])
             self.assertNotIn("check the loop log", out["ESCALATE_PROJECT"])
+            # The ops copy names the cause too, in place of its log-tail.
+            self.assertIn("SPEND limit", out["ESCALATE_OPS"])
+            self.assertNotIn("check the loop log", out["ESCALATE_OPS"])
 
     def test_streak_alert_stays_generic_without_a_limit(self):
+        """No known cause: ops gets the technical line; the project group gets
+        the plain-language copy (no 'check the loop log' — nobody there can),
+        with what it means for them."""
         with tempfile.TemporaryDirectory() as tmp:
             roster = self.make_two_project_roster(tmp)
             state = Path(tmp) / "orch-state.json"
             self.record(roster, state, "alpha", "error")
             self.record(roster, state, "alpha", "error")
             _st, out = self.record(roster, state, "alpha", "error")
+            self.assertIn("3 consecutive failed passes", out["ESCALATE_OPS"])
+            self.assertIn("check the loop log", out["ESCALATE_OPS"])
             self.assertIn("3 consecutive failed passes", out["ESCALATE_PROJECT"])
-            self.assertIn("check the loop log", out["ESCALATE_PROJECT"])
+            self.assertNotIn("check the loop log", out["ESCALATE_PROJECT"])
+            self.assertIn("retrying on its schedule", out["ESCALATE_PROJECT"])
+            self.assertIn("stay queued", out["ESCALATE_PROJECT"])
 
     def test_all_error_says_auth_when_no_usage_limit(self):
         """No limit=true in any usage.jsonl -> a genuine auth failure wording."""

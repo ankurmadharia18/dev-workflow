@@ -246,6 +246,10 @@ log "=== $INVOKE $* — start (HEAD $(git rev-parse --short HEAD 2>/dev/null)${M
 # only (--report/--dry-run stay silent); a send failure never blocks the pass.
 # Under the orchestrator the pre-check already gates passes on queue depth /
 # pending messages, so a heartbeat there means "found work, starting".
+# It is ONE status line per group, edited in place (`send --replace heartbeat`):
+# a pass every 15 min must not add a message every 15 min — 40% of a busy
+# group's history was heartbeats, and replies landed on them. A fresh message is
+# posted only when the previous one can't be edited (deleted, first run).
 HEARTBEAT="${TICKET_LOOP_HEARTBEAT:-$(cfg notify.heartbeat false 2>/dev/null || echo false)}"
 case "$(printf '%s' "$HEARTBEAT" | tr 'A-Z' 'a-z')" in 1|true|yes|on) HEARTBEAT=1 ;; *) HEARTBEAT=0 ;; esac
 case " $* " in *" --dry-run "*|*" --report "*) HEARTBEAT=0 ;; esac
@@ -256,7 +260,8 @@ if [ "$HEARTBEAT" = 1 ]; then
   done
   if [ -n "$TGPY" ] && [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${AGENT_TELEGRAM_CHAT_ID:-}" ] \
      && command -v python3 >/dev/null 2>&1; then
-    if python3 "$TGPY" send "▶️ ${TENANT}: pass starting (HEAD $(git rev-parse --short HEAD 2>/dev/null))" >/dev/null 2>&1; then
+    if python3 "$TGPY" send --replace heartbeat \
+         "▶️ ${TENANT}: pass starting $(date +%H:%M) (HEAD $(git rev-parse --short HEAD 2>/dev/null))" >/dev/null 2>&1; then
       log "heartbeat sent to project group"
     else
       log "WARN: heartbeat failed to send"

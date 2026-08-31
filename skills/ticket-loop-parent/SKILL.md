@@ -24,7 +24,12 @@ triage, ask, record, and report; **subagents build, one child repo at a time**.
 **Hard rule: 1 ticket = 1 repo.** Every ticket belongs to exactly one Linear
 Project, every Project maps to exactly one child clone, and no ticket ever
 produces work in two repos. A ticket whose ask genuinely spans repos gets split
-by a human, not by you.
+by a human, not by you — and a human splits it *by saying so*: when a message
+names the repo for EACH part ("board UI in pt-web, the API half in pt-api") and
+asks you to proceed, that IS the split decision — file the child tickets exactly
+as described, one per named repo, and never ask for the word "split" on top.
+Anything less than a repo per part (a vague "needs both", a part with no repo
+named) is not a split: ask. What you never do is invent a split nobody described.
 
 The single-repo `/ticket-loop` skill is **frozen and untouched** — a child repo
 is still independently valid (a developer can run the interactive skills in it
@@ -136,7 +141,11 @@ workflows, and each repo's `dev-workflow.yml` are off-limits; pass that section
    clone. The parent does purely PM; the subagent does purely code.
 3. **Resolve a target repo BEFORE any tracker mutation.** No `create_ticket`,
    `comment`, `label`, or `move` until the message or ticket has routed to
-   exactly one `repos:` entry. Never create a ticket in a guessed project.
+   exactly one `repos:` entry. Never create a ticket in a guessed project. One
+   deliberate exception, spelled out in step 2: a reply to a question you asked
+   is recorded on its ticket BY ID (comment + drop **blocked**) before the
+   route is proved — the reply is one-shot and must never be lost to a routing
+   failure; nothing is *built* until the route resolves.
 4. **Parent state stays in the parent's state dir; child state stays in the
    child.** Telegram offset + questions map, digest/scout/hygiene stamps, and
    `outcome.json` live ONLY in the parent's `$TICKET_LOOP_STATE_DIR` (default
@@ -217,7 +226,9 @@ its turn. Steps 3–7 are the **REPO part** — this pass's one child only. Step
 
 Mirrors the frozen loop: the report lands first thing, not after a 15-minute
 build. Read `last_digest` from the parent's `state.json` and compute today in
-`schedule.tz`. **`last_digest != today`** → compose and send the digest (see
+`schedule.tz`. **Before 08:00 local → send nothing, stamp nothing** (the first
+pass at or after 08:00 sends it; `--report` ignores this).
+**`last_digest != today`** (08:00 or later) → compose and send the digest (see
 *Digest* under step 8's sibling content below) and stamp `last_digest = today`
 NOW, before touching any ticket — even if a ticket is already actionable, even
 if earlier passes ran today (the gate is the stored date, never "am I the
@@ -232,7 +243,12 @@ unconditionally.) The digest is READ-ONLY and aggregates across every
 `python3 telegram.py poll --timeout 0` — drain every human message. **Classify
 before mutating anything**, exactly as the single-repo loop's step 1 (codebase
 question / answer / approval / decline / creation request / green-light / flag /
-questions / chatter, screenshots as evidence). A **codebase question** (first line
+questions / chatter, screenshots as evidence) — including its lenient reading:
+prefixes are hints, an unprefixed question is a `question:`, an unprefixed
+request aimed at the agent is a fresh `ticket:` (it then routes exactly like any
+fresh report below, tag or intake), `reply_to_text` is read before classifying,
+an answer is an approval, a decline re-records the hold, `no`/`drop it` from
+the reporter cancels, and every ack names the ticket the human named. A **codebase question** (first line
 `question:` + a body, checked first, independent of the `ticket` field) is
 ephemeral — it creates no ticket; but like everything else here it still needs a
 repo, so it routes in step 2. But here classification is not enough:
@@ -256,7 +272,11 @@ message identifies itself:
   bridge already CONSUMED the question-map entry during `poll`, so this reply
   is a one-shot: `comment` `📩 Answer via Telegram (<from>, id <from_id>):
   <text>` on the ticket and drop the **blocked** label, both by id (neither
-  needs a repo). ONLY THEN resolve the repo for the eventual build: the poll
+  needs a repo) — unless the reply is a decline/deferral (`no`, `hold`, `skip`,
+  "I don't know", "ask <person>"): then mirror it, KEEP **blocked**, and
+  re-record the hold with a `--ticket` send exactly as the single-repo rule
+  says, so the next pass can't read the consumed entry as an answer. ONLY THEN
+  resolve the repo for the eventual build: the poll
   line carries **`project`** when you asked the question with `--project` (the
   bridge records it against the question message) → `repos:` → child; fall back
   to `get_ticket`'s project field only for a legacy question with no recorded
@@ -281,7 +301,13 @@ message identifies itself:
   - **Project maps to a `repos:` entry** → apply the single-repo loop's handling
     (queue label on approval, exclude-label refusal, flag label).
   - **Ticket still in `intake_project`** (a `take` / green-light on a captured
-    report) → this is the intake→repo hand-off; ask ONE routing question:
+    report) → this is the intake→repo hand-off. **If exactly one `repos:` entry
+    is named** — a `[tag]` on the `take` itself (`take ABC-123 [pt-api]`), or an
+    explicit `[tag]` / the repo's exact name/slug in the report's text — route
+    without asking: `move` it into that project, apply the queue
+    label, ack `👍 ABC-123 → pt-api, queued`. A name that merely *suggests* a repo
+    (a screen, a feature area) is not a name — that still asks. Otherwise (none or
+    several named) ask ONE routing question:
     `telegram.py send --ticket ABC-123 --context 'green-light: <title>' "❓
     Which repo should I build ABC-123 in — pt-api / pt-web / …?"` (list from
     `repos:`), set the **blocked** label, and do NOT move or queue yet. **Skip
@@ -321,15 +347,20 @@ message identifies itself:
     - **`intake_project` SET → passive capture (capture-dedup).** First check
       `captured_reports[message_id]`; if present, this is a re-delivered message
       — skip it (idempotent, no duplicate ticket). Otherwise `create_ticket` in
-      `intake_project`, body = the verbatim report, **NO queue label**; record
+      `intake_project`, body = the verbatim report + `Reported via Telegram by
+      <from> (id <from_id>).` (the id a later cancel is checked against), **NO
+      queue label**; record
       `captured_reports[message_id] = <new ticket id>`; ack in the group `📥
-      Captured ABC-<n> in Intake — <title>. Move it to a repo + green-light for
-      the agent, or leave it for a human.` Exactly ONE mutation. Do NOT
-      proactively ask "which repo?" — capture is passive; a human triages it.
+      Captured ABC-<n> in Intake — <title>. Reply take ABC-<n> [pt-api] to build
+      it, or leave it for a human.` — and when the report's text names exactly
+      one `repos:` entry, say it: `Looks like [pt-api] — reply take ABC-<n> to
+      build it there.` (the later `take` then routes without a question, per the
+      rule above). Exactly ONE mutation. Do NOT proactively ask "which repo?" —
+      capture is passive; a human triages it.
     - **`intake_project` UNSET → today's behavior unchanged:** ask ONE
       clarifying question and create NOTHING yet, stashing the original report so
       a plain reply completes it: `telegram.py send --context '<the original
-      report verbatim>' "❓ Which project — pt-api / pt-web / …? Reply with the
+      report verbatim> — reported by <from> (id <from_id>)' "❓ Which project — pt-api / pt-web / …? Reply with the
       project (or resend as 'bug: [pt-api] …')."` (list built from `repos:`).
       The `--context` records the report against the question message, so the
       human's **reply naming the project** returns on the next poll with
@@ -387,8 +418,9 @@ message identifies itself:
     for `repo.base_branch` / `repo.prod_branch` / `deploy` / `version` and runs
     every command inside the child clone. The parent — never the subagent — sends
     every Telegram reply.
-- Anything else with no ticket and no recognized prefix is group chatter —
-  ignore it.
+- Anything else with no ticket, no recognized prefix, and — per the single-repo
+  step-1 reading — no question or agent-directed request in it, is group chatter:
+  leave 👀, reply nothing.
 
 ### 3. Choose this pass's repo — round-robin, skipping idle children
 
@@ -505,8 +537,13 @@ CHILD's `dev-workflow.yml`), clean untracked files excluding the child's own
 checkout is NEVER reset — this is the ONLY reset procedure in the whole skill
 (step 4b/4c reuse it), and it is always scoped `git -C <child>`.**
 
-**b. Announce + move.** `move` the ticket to an In Progress queue state;
-`telegram.py send "🔨 Starting ABC-<n> — <one-line plan>"`.
+**b. Re-read, announce, move.** `get_ticket` immediately before dispatch — build
+only if it is still queue-labeled, in a queue state, in THIS child's project,
+free of exclude labels and not done/canceled; anything else → respect it, skip,
+and never restore a state or label a human changed. Then `move` the ticket to
+an In Progress queue state; `telegram.py send "🔨 Starting ABC-<n> — <one-line
+plan>"` (or `🔨 Resuming ABC-<n>` when an `agent/abc-<n>` branch or open PR
+already exists on the child's origin — the subagent continues on it).
 
 **c. Spawn ONE subagent** (general-purpose, **`run_in_background: false` —
 await it fully**, `model` resolved like the sibling skill's **Subagent model**
@@ -546,8 +583,16 @@ the parameter) with a task brief containing:
 
 The parent — never the subagent — writes every outcome back:
 
-- **PR returned** → `link_pr` the URL to the ticket, `comment` the PR link +
-  summary, `move` to an in-review state if the board has one, `telegram.py
+- **PR returned** → drain first (a cancel/stop that arrived during the build
+  applies now), then re-read the ticket with the dispatch checks: cancelled/closed
+  during the build, or a cancel just drained → close the PR with a comment, stop,
+  never move it back; queue label dropped, exclude label added, moved to another
+  project, or no longer in a queue/in-progress state → leave the PR open, comment
+  the link, say so in the group, write no state or label. Otherwise `link_pr` the URL
+  to the ticket, `comment` the PR link + summary, `move` to an in-review state if
+  the board has one; when the PR leaves a human step owed (migration, env key,
+  cron row, grant), file the single-repo skill's `☑️ … (for ABC-<n>)` follow-up in
+  the SAME child project — **flagged** role, no queue label; `telegram.py
   send "✅ ABC-<n> — PR opened: <url>"`.
 - **Needs-input** → route exactly like triage's not-confident branch: `❓`/`🧭`
   to the group (`--ticket` so the reply routes), mirror as a `comment`, set
@@ -573,7 +618,11 @@ date/flag-gated in the PARENT's `state.json` (`last_scout`, `idle_pinged`).
   ABC-<n>' to approve.` Stamp `last_scout`. The queue label is applied only on
   a human's approval, never by scouting.
 - **Idle ping** — the single-repo loop's `idle_pinged` streak flag, unchanged,
-  in the parent's `state.json`: one ping per idle streak, then silent.
+  in the parent's `state.json`: one ping per idle streak, then silent. "Did
+  nothing" is the single-repo definition — no message sent, no ticket or PR
+  mutated; board reads, PR checks, empty drains and stamp writes are bookkeeping
+  and do not reset the streak. The note is the fixed one-liner, never a list of
+  waiting PRs or open questions.
 
 **Digest content** (composed at step 0; specified here for reference) — ONE
 message to the ONE group, the single-repo loop's sections and shared rendering
