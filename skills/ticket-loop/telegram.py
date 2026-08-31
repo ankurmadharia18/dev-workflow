@@ -2,13 +2,17 @@
 """Telegram bridge for the ticket-loop skill.
 
 Subcommands:
-  send [--ticket ABC-123] [--project P] [--context C] <text...>
+  send [--ticket ABC-123] [--project P] [--context C] [--replace KEY] <text...>
                                       Send a message to the agent group; prints {"message_id": N}.
                                       With --ticket, records message_id -> ticket so a Telegram reply
                                       to that message matches the ticket on poll. --project tags the
                                       reply with a Linear Project (multi-repo routing without a tracker
                                       read). --context records a PRE-TICKET question (ticket=None, e.g.
                                       a "which project?" clarifier) so a plain reply routes back to it.
+                                      --replace KEY edits the message previously sent under KEY in
+                                      place (a status line such as the heartbeat: one message that
+                                      updates instead of one per pass); prints {"message_id", "edited"}.
+                                      Not combinable with the routing flags.
   poll [--timeout N]                  Fetch new human messages in the agent group; prints one JSON
                                       line per message. Under the orchestrator's Telegram INGRESS
                                       (TICKET_LOOP_INGRESS=1, or a fresh <state>/ingress.json) the
@@ -18,9 +22,14 @@ Subcommands:
                                       Otherwise (single-mode timer, laptop) it long-polls getUpdates
                                       itself (default 25s). Either way the output line is:
                                       {message_id, from, from_id, text, ticket, project, context,
-                                       reply_to_message_id, media_path}
+                                       reply_to_message_id, reply_to_text, reply_to_from_bot,
+                                       media_path}
                                       `ticket`/`project`/`context` come from the replied-to question
-                                      entry; `ticket` also from an ABC-### prefix (any TEAM-123 key).
+                                      entry; `ticket` also from an ABC-### prefix (any TEAM-123 key),
+                                      else from the ONE key a replied-to BOT headline names
+                                      ("✅ ABC-12 — PR opened"). `reply_to_text` is the quoted
+                                      message (≤700 chars) so a reply to a heartbeat/alert/PR post
+                                      can be read in context; `reply_to_from_bot` says who wrote it.
                                       A reply to a pre-ticket clarifier carries `context` with `ticket`
                                       null.
                                       Photos (and image documents) are downloaded to
@@ -110,6 +119,22 @@ def state_dir() -> Path:
 REPO_ROOT = find_repo_root()
 STATE_PATH = state_dir() / "state.json"
 TICKET_RE = re.compile(r"^\s*([A-Z][A-Z0-9]*-\d+)\b", re.IGNORECASE)
+# A bot headline that names ONE ticket in its subject slot: one of the skill's
+# ticket-headline markers, an optional verb ("Starting"/"Resuming"), then the key —
+# e.g. "✅ ABC-12 — merged", "❓ ABC-12 — title", "🔨 Starting ABC-12 — plan",
+# "👍 ABC-12 queued". The marker set is closed on purpose: 💬 answers, 📊 digests,
+# 💤 idle notes, ▶️ heartbeats never bind. Anchored to the first line, and only
+# honoured when that line holds exactly one key, so a "blocked by ABC-7" line or
+# prose like ISO-8601 never binds a reply to the wrong ticket.
+HEADLINE_RE = re.compile(
+    r"^(?:✅|❓|🧭|🔨|⚠️|🔁|🔀|👍|🐛|💡|🚩|⏸️|🗑|🙅)\s+"
+    r"(?:Starting\s+|Resuming\s+|Taking\s+)?([A-Z][A-Z0-9]*-\d+)"
+    # …and the key must sit in a template slot: followed by a dash/arrow/colon or
+    # one of the skill's headline verbs — so "⚠️ ISO-8601 dates" never binds.
+    r"(?=\s*(?:—|–|→|:|$)|\s+(?:queued|logged|merged|held|failed|ballooned|revision|PR|asks|"
+    r"cancelled|is|taken|unblocked|split|re-scoped)\b)")
+ANY_KEY_RE = re.compile(r"\b[A-Z][A-Z0-9]*-\d+\b", re.IGNORECASE)   # counting only: any case, any key-shaped token
+REPLY_TEXT_MAX = 700          # chars of the quoted message carried on a poll line
 
 
 def load_env() -> None:
@@ -145,8 +170,29 @@ def require_env(name: str) -> str:
     return value
 
 
+class TelegramError(Exception):
+    """A Telegram API call that failed (HTTP error, unreachable, or ok=false).
+    `api` turns it into a clean exit; callers with a fallback catch it."""
+
+
 def api(method: str, params: dict, *, http_timeout: int = 35) -> dict:
+    try:
+        return api_raw(method, params, http_timeout=http_timeout)
+    except TelegramError as exc:
+        sys.exit(f"error: {exc}")
+
+
+def api_raw(method: str, params: dict, *, http_timeout: int = 35) -> dict:
+    """Like `api`, but raises TelegramError instead of exiting."""
     return _request(method, urllib.parse.urlencode(params).encode(), {}, http_timeout)
+
+
+def request(method: str, data: bytes, headers: dict, http_timeout: int) -> dict:
+    """`_request` with the CLI's exit-on-error contract (multipart senders)."""
+    try:
+        return _request(method, data, headers, http_timeout)
+    except TelegramError as exc:
+        sys.exit(f"error: {exc}")
 
 
 def _request(method: str, data: bytes, headers: dict, http_timeout: int) -> dict:
@@ -157,11 +203,11 @@ def _request(method: str, data: bytes, headers: dict, http_timeout: int) -> dict
         with urllib.request.urlopen(req, timeout=http_timeout) as resp:
             payload = json.load(resp)
     except urllib.error.HTTPError as exc:
-        sys.exit(f"error: telegram {method} failed: HTTP {exc.code} {exc.read().decode(errors='replace')[:300]}")
+        raise TelegramError(f"telegram {method} failed: HTTP {exc.code} {exc.read().decode(errors='replace')[:300]}")
     except (urllib.error.URLError, TimeoutError) as exc:
-        sys.exit(f"error: telegram {method} unreachable: {exc}")
+        raise TelegramError(f"telegram {method} unreachable: {exc}")
     if not payload.get("ok"):
-        sys.exit(f"error: telegram {method} failed: {payload.get('description')}")
+        raise TelegramError(f"telegram {method} failed: {payload.get('description')}")
     return payload["result"]
 
 
@@ -217,11 +263,58 @@ def _q_entry(ticket, text, project=None, context=None) -> dict:
     return entry
 
 
+def edit_or_send(chat_id: str, text: str, old_id):
+    """Edit the bot's earlier message `old_id` in place, or post a fresh one.
+    Returns (message_id, edited). An unchanged text is a success (Telegram
+    answers 400 "message is not modified"); a target Telegram explicitly reports
+    as gone/uneditable falls back to a fresh send; ANY other failure (network,
+    auth, rate limit, 5xx) propagates — the edit may have gone through, and a
+    blind resend could duplicate it."""
+    if old_id:
+        try:
+            api_raw("editMessageText", {"chat_id": chat_id, "message_id": old_id, "text": text})
+            return old_id, True
+        except TelegramError as exc:
+            reason = str(exc).lower()
+            if "not modified" in reason:
+                return old_id, True
+            if not any(s in reason for s in UNEDITABLE_REASONS):
+                raise
+            # target deleted / too old / not ours → post afresh
+    result = api_raw("sendMessage", {"chat_id": chat_id, "text": text})
+    return result["message_id"], False
+
+
+# Telegram's wording when a message can't be edited because of the TARGET (not
+# the request): it was deleted, is too old, or isn't the bot's. Only these
+# justify posting a fresh message in `edit_or_send`.
+UNEDITABLE_REASONS = ("message to edit not found", "message can't be edited",
+                      "message_id_invalid", "message identifier is not specified")
+
+
 def cmd_send(args: argparse.Namespace) -> None:
     chat_id = require_env("AGENT_TELEGRAM_CHAT_ID")
     text = " ".join(args.text).strip() or sys.stdin.read().strip()
     if not text:
         sys.exit("error: empty message")
+    replace = getattr(args, "replace", None)
+    if replace:
+        # An in-place status line (heartbeat, merge queue) is never a routed
+        # question: it carries no ticket/context, so it must not touch the
+        # questions map — refuse the combination rather than half-record it.
+        if getattr(args, "ticket", None) or getattr(args, "project", None) or getattr(args, "context", None):
+            sys.exit("error: --replace cannot be combined with --ticket/--project/--context")
+        state = load_state()
+        notices = state.setdefault("notices", {})
+        try:
+            message_id, edited = edit_or_send(chat_id, text, notices.get(replace))
+        except TelegramError as exc:
+            sys.exit(f"error: {exc}")
+        if not edited:
+            notices[replace] = message_id
+            save_state(state)
+        print(json.dumps({"message_id": message_id, "edited": edited}))
+        return
     result = api("sendMessage", {"chat_id": chat_id, "text": text})
     message_id = result["message_id"]
     # Record a question entry whenever this message expects a routed reply: a
@@ -273,15 +366,46 @@ def resolve_reply(msg: dict, questions: dict):
     return rid, questions.get(rid)
 
 
+def reply_context(msg: dict, *, full: bool = False):
+    """(quoted text or None, quoted-author-is-bot) for the message this one replies
+    to — straight from Telegram's reply_to_message, so no outbound message ever
+    needs storing. Text is truncated to REPLY_TEXT_MAX unless `full` (headline
+    matching reads the untruncated first line)."""
+    target = msg.get("reply_to_message") or {}
+    text = target.get("text") or target.get("caption") or ""
+    is_bot = bool((target.get("from") or {}).get("is_bot"))
+    if text and not full:
+        text = text[:REPLY_TEXT_MAX]
+    return (text or None), is_bot
+
+
+def headline_ticket(quoted: str):
+    """The ONE ticket a bot headline names in its subject slot, or None. Only the
+    first line counts, it must match HEADLINE_RE, and it must contain exactly one
+    key — a digest, a two-ticket line, or prose never yields a binding."""
+    if not quoted:
+        return None
+    first = quoted.splitlines()[0]
+    m = HEADLINE_RE.match(first)
+    if not m or len(ANY_KEY_RE.findall(first)) != 1:
+        return None
+    return m.group(1).upper()
+
+
 def match_ticket(msg: dict, questions: dict):
     """Return the issue key (e.g. ABC-123) this message answers, or None — from the
-    replied-to question entry, else a leading TEAM-123 prefix in the text.
-    (project/context come from `resolve_reply`; poll emits them.)"""
+    replied-to question entry, else a leading TEAM-123 prefix in the text, else
+    the single key in the replied-to BOT headline (a reply to "✅ ABC-12 — PR
+    opened" is about ABC-12). (project/context come from `resolve_reply`; poll
+    emits them.)"""
     _rid, entry = resolve_reply(msg, questions)
     if entry is not None:
         return _q_ticket(entry)
     prefix = TICKET_RE.match(msg.get("text") or msg.get("caption") or "")
-    return prefix.group(1).upper() if prefix else None
+    if prefix:
+        return prefix.group(1).upper()
+    quoted, from_bot = reply_context(msg, full=True)
+    return headline_ticket(quoted) if from_bot else None
 
 
 INGRESS_FRESH_S = 300   # a marker older than this means no ingress is serving this state dir
@@ -399,6 +523,7 @@ def emit_record(msg: dict, questions: dict, media_path=None) -> dict:
     """The poll output line for one human message (shared by both modes)."""
     sender = msg.get("from", {})
     rid, entry = resolve_reply(msg, questions)
+    quoted, quoted_from_bot = reply_context(msg)
     if entry is not None:
         # A reply consumes its question entry, and carries the project/context
         # recorded at ask time (routes without a tracker read; a pre-ticket
@@ -407,7 +532,10 @@ def emit_record(msg: dict, questions: dict, media_path=None) -> dict:
         questions.pop(rid, None)
     else:
         prefix = TICKET_RE.match(msg.get("text") or msg.get("caption") or "")
-        ticket = prefix.group(1).upper() if prefix else None
+        if prefix:
+            ticket = prefix.group(1).upper()
+        else:
+            ticket = headline_ticket(reply_context(msg, full=True)[0]) if quoted_from_bot else None
         project = context = None
     return {
         "message_id": msg["message_id"],
@@ -420,6 +548,10 @@ def emit_record(msg: dict, questions: dict, media_path=None) -> dict:
         "project": project,       # Linear Project for repo routing (or None)
         "context": context,       # pre-ticket disambiguation payload (or None)
         "reply_to_message_id": (msg.get("reply_to_message") or {}).get("message_id"),
+        # What the human is replying TO — so a reply to a heartbeat, an alert or
+        # a PR post can still be read in context (null when not a reply).
+        "reply_to_text": quoted,
+        "reply_to_from_bot": quoted_from_bot,
         "media_path": (media_path if media_path and os.path.exists(media_path)
                        else download_media(msg)),
     }
@@ -539,7 +671,7 @@ def cmd_send_photo(args: argparse.Namespace) -> None:
     )
     parts.append(path.read_bytes())
     parts.append(f"\r\n--{boundary}--\r\n".encode())
-    result = _request(
+    result = request(
         "sendPhoto",
         b"".join(parts),
         {"Content-Type": f"multipart/form-data; boundary={boundary}"},
@@ -576,7 +708,7 @@ def cmd_send_document(args: argparse.Namespace) -> None:
     )
     parts.append(path.read_bytes())
     parts.append(f"\r\n--{boundary}--\r\n".encode())
-    result = _request(
+    result = request(
         "sendDocument",
         b"".join(parts),
         {"Content-Type": f"multipart/form-data; boundary={boundary}"},
@@ -783,6 +915,10 @@ def main() -> None:
     p_send.add_argument("--project", help="Linear Project to tag the reply with (multi-repo routing)")
     p_send.add_argument("--context", help="opaque payload for a PRE-TICKET question "
                         "(e.g. a 'which project?' clarifier) so a plain reply routes back")
+    p_send.add_argument("--replace", metavar="KEY",
+                        help="edit the message last sent under KEY in place (state.json notices) "
+                             "instead of posting a new one; falls back to a fresh send when the "
+                             "old message can't be edited. For status lines, never questions.")
     p_send.add_argument("text", nargs="*", help="message text (or pipe via stdin)")
     p_send.set_defaults(func=cmd_send)
 

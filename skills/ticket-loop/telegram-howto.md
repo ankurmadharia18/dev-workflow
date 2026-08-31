@@ -12,6 +12,10 @@ Lines after the first become the description — put acceptance criteria,
 links, repro steps there. Attach a screenshot to any message; it's read as
 evidence.
 
+The prefixes are hints, not a grammar: a plain question is answered, a plain
+request aimed at the agent is filed (it says so — reply "drop it" if not), and
+case/spacing don't matter. The prefix just makes the routing certain.
+
 A report IS the ask — there's no approve step. The agent files the ticket,
 reads the code, then either builds it or comes back with ONE scoped question
 or a short plan. It never asks permission just to go look.
@@ -31,7 +35,13 @@ WHEN THE AGENT ASKS YOU SOMETHING
 • 🙋 = idle-board proposal → reply go/yes or skip/no
 • Answer by replying to that message, or start your text with ABC-123.
   Either way it routes to the ticket, unblocks it, and is mirrored onto the
-  ticket as a comment.
+  ticket as a comment. Your answer IS the go — no separate "take" needed.
+• Replying to a bot headline of the form `✅ ABC-12 — …` / `🔨 Starting ABC-12`
+  / `❓ ABC-12 — …` / `👍 ABC-12 queued` (one ticket in the subject slot)
+  routes to that ticket. A reply to the ▶️ status line, a 💬 answer or the
+  digest is read in context — name the ticket if the message lists several.
+• ▶️ "pass starting" is ONE line that updates in place, not a new message
+  per pass.
 • ⚠️ YOUR emoji reactions never reach the bot — a 👍 tap does nothing. Send text.
 • 👀 on your message = the bot received it (seconds); 👍 = it acted on it.
   A reply follows the 👍. 👀 that never turns into 👍 = seen, nothing to do.

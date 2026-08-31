@@ -609,10 +609,9 @@ def apply_outcome(ps, cls, cfg, now, cadence="adaptive", interval_s=None):
         ps["error_streak"] += 1
         delay = rung(ps["error_streak"])
         if ps["error_streak"] == cfg["error_escalate_after"]:
-            msg = (f"⚠️ ticket-loop: {ps['error_streak']} consecutive failed "
-                   f"passes — check the loop log")
-            esc.append(("project", msg))
-            esc.append(("ops", msg))
+            n = ps["error_streak"]
+            esc.append(("project", project_streak_alert(n)))
+            esc.append(("ops", f"⚠️ ticket-loop: {n} consecutive failed passes — check the loop log"))
     elif cls == "crash":
         ps["crash_streak"] += 1
         ps["error_streak"] += 1
@@ -663,6 +662,17 @@ def _latest_usage_limit(state_dir):
     return False, "", ""
 
 
+def project_streak_alert(n, cause=None):
+    """The TEAM-GROUP copy of the failed-passes alert. Nobody in a project group
+    can 'check the loop log' (that copy goes to ops), so this one says what it
+    means for them: the loop keeps retrying on its schedule, ops is being alerted,
+    and their messages are not lost. `cause` names a known reason (usage limit)."""
+    why = f" Cause: {cause}." if cause else ""
+    return (f"⏸️ ticket-loop: {n} consecutive failed passes — retrying on its schedule; "
+            f"the operator channel is being alerted.{why} Messages sent here stay "
+            "queued and are read once a pass succeeds.")
+
+
 def _limit_cause(kind, reset):
     """Human tail for an alert whose failing pass hit a usage limit."""
     if kind == "spend":
@@ -696,7 +706,10 @@ def cmd_record(args):
         hit, kind, reset = _latest_usage_limit(proj.get("state_dir"))
         if hit:
             cause = _limit_cause(kind, reset)
-            esc = [(lvl, m.replace("check the loop log", cause)
+            # Two copies, two shapes: the ops line swaps its "check the loop
+            # log" tail for the cause; the project line is regenerated whole.
+            esc = [(lvl, (project_streak_alert(ps["error_streak"], cause) if lvl == "project"
+                          else m.replace("check the loop log", cause))
                     if "consecutive failed passes" in m else m)
                    for lvl, m in esc]
     st.pop("pass_started", None)                       # write-ahead consumed

@@ -718,5 +718,220 @@ class TestPollEmitsRouting(unittest.TestCase):
         self.assertEqual(data[0]["context"], "c")
 
 
+
+class TestReplyContext(unittest.TestCase):
+    """A reply to ANY bot message carries the quoted text, and binds a ticket
+    only from an unambiguous bot headline."""
+
+    def test_reply_to_text_and_author_flag(self):
+        msg = {"message_id": 2, "from": {"id": 7}, "text": "yes",
+               "reply_to_message": {"message_id": 1, "from": {"is_bot": True},
+                                    "text": "▶️ tenant: pass starting (HEAD abc)"}}
+        quoted, from_bot = telegram.reply_context(msg)
+        self.assertEqual(quoted, "▶️ tenant: pass starting (HEAD abc)")
+        self.assertTrue(from_bot)
+        self.assertEqual(telegram.reply_context({"message_id": 3, "text": "x"}), (None, False))
+        cap = {"message_id": 4, "reply_to_message": {"message_id": 1, "from": {"is_bot": True},
+                                                     "caption": "shot"}}
+        self.assertEqual(telegram.reply_context(cap), ("shot", True))
+
+    def test_reply_to_text_is_truncated_but_headline_reads_the_full_line(self):
+        msg = {"message_id": 2, "reply_to_message": {"message_id": 1, "from": {"is_bot": True},
+                                                     "text": "x" * 2000}}
+        quoted, _ = telegram.reply_context(msg)
+        self.assertEqual(len(quoted), telegram.REPLY_TEXT_MAX)
+        # a second key past the truncation point still makes the headline ambiguous
+        long_first_line = "✅ ABC-1 — " + "y" * 800 + " see ABC-2"
+        msg = {"text": "ok", "reply_to_message": {"message_id": 1, "from": {"is_bot": True},
+                                                  "text": long_first_line}}
+        self.assertIsNone(telegram.match_ticket(msg, {}))
+
+    def test_headline_ticket_binds_only_single_key_bot_headlines(self):
+        ht = telegram.headline_ticket
+        self.assertEqual(ht("✅ PXT-532 — PR opened: https://x/pull/49\nmore"), "PXT-532")
+        self.assertEqual(ht("❓ ABC-12 — title"), "ABC-12")
+        self.assertEqual(ht("🔨 Starting ABC-7 — plan"), "ABC-7")
+        self.assertIsNone(ht("▶️ tenant: pass starting (HEAD abc)"))          # heartbeat
+        self.assertIsNone(ht("📊 Daily digest — 2026-08-26\n• ABC-1 merged"))  # digest
+        self.assertIsNone(ht("🔗 ABC-8 can't go yet — blocked by ABC-7"))      # two keys
+        self.assertIsNone(ht("💬 the field is ISO-8601 formatted"))            # prose
+        self.assertIsNone(ht("💬 ISO-8601 is the format"))                      # not a ticket marker
+        self.assertIsNone(ht("📊 ABC-1 merged today"))                          # digest marker
+        self.assertIsNone(ht("💤 ABC-1 idle"))
+        self.assertEqual(ht("👍 ABC-1 queued"), "ABC-1")
+        self.assertEqual(ht("👍 ABC-1 → pt-api, queued"), "ABC-1")
+        self.assertEqual(ht("⚠️ ABC-3 failed: tests"), "ABC-3")
+        self.assertEqual(ht("🐛 ABC-9 logged — investigating"), "ABC-9")
+        self.assertEqual(ht("⏸️ ABC-9 held — later"), "ABC-9")
+        self.assertIsNone(ht("⚠️ ISO-8601 dates are expected here"))          # key not in a template slot
+        self.assertIsNone(ht("✅ UTF-8 output fixed"))
+        self.assertIsNone(ht("✅ ABC-1 — blocked by abc-2"))                  # lowercase key still counts
+        self.assertIsNone(ht("ABC-12 — no marker token"))
+        self.assertIsNone(ht(None))
+        self.assertIsNone(ht(""))
+
+    def test_match_ticket_prefers_prefix_then_bot_headline_never_human_quote(self):
+        bot_quote = {"message_id": 1, "from": {"is_bot": True}, "text": "✅ ABC-12 — merged"}
+        human_quote = {"message_id": 1, "from": {"is_bot": False}, "text": "✅ ABC-12 — merged"}
+        self.assertEqual(telegram.match_ticket({"text": "ok", "reply_to_message": bot_quote}, {}), "ABC-12")
+        self.assertEqual(telegram.match_ticket({"text": "abc-99 ok", "reply_to_message": bot_quote}, {}), "ABC-99")
+        self.assertIsNone(telegram.match_ticket({"text": "ok", "reply_to_message": human_quote}, {}))
+        # a tracked ❓ still wins over the headline
+        self.assertEqual(telegram.match_ticket({"text": "ok", "reply_to_message": bot_quote},
+                                               {"1": {"ticket": "ABC-1"}}), "ABC-1")
+
+
+class TestPollEmitsReplyContext(TestPollEmitsRouting):
+    """poll lines carry reply_to_text/reply_to_from_bot and the headline binding."""
+
+    def reply_with(self, uid, target):
+        telegram.api = lambda method, params, **kw: [{"update_id": uid, "message": {
+            "message_id": uid, "chat": {"id": -100777},
+            "from": {"is_bot": False, "username": "u", "id": 7}, "text": "go",
+            "reply_to_message": target}}]
+
+    def test_reply_to_untracked_bot_headline_binds_ticket_and_carries_text(self):
+        self.write({})
+        self.reply_with(600, {"message_id": 500, "from": {"is_bot": True},
+                              "text": "✅ ABC-12 — PR opened: https://x"})
+        out = self.run_poll()
+        self.assertEqual(out[0]["ticket"], "ABC-12")
+        self.assertEqual(out[0]["reply_to_text"], "✅ ABC-12 — PR opened: https://x")
+        self.assertTrue(out[0]["reply_to_from_bot"])
+
+    def test_reply_to_heartbeat_has_text_but_no_ticket(self):
+        self.write({})
+        self.reply_with(600, {"message_id": 500, "from": {"is_bot": True},
+                              "text": "▶️ tenant: pass starting (HEAD abc)"})
+        out = self.run_poll()
+        self.assertIsNone(out[0]["ticket"])
+        self.assertIn("pass starting", out[0]["reply_to_text"])
+
+    def test_plain_message_has_null_reply_fields(self):
+        self.write({})
+        telegram.api = lambda method, params, **kw: [{"update_id": 600, "message": {
+            "message_id": 600, "chat": {"id": -100777},
+            "from": {"is_bot": False, "username": "u", "id": 7}, "text": "hi"}}]
+        out = self.run_poll()
+        self.assertIsNone(out[0]["reply_to_text"])
+        self.assertFalse(out[0]["reply_to_from_bot"])
+
+
+class TestSendReplace(unittest.TestCase):
+    """`send --replace KEY` edits the message last sent under KEY in place."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.state_path = Path(self._tmp.name) / "state.json"
+        self._orig_state_path = telegram.STATE_PATH
+        telegram.STATE_PATH = self.state_path
+        self._orig_api_raw = telegram.api_raw
+        self.calls = []
+        os.environ["AGENT_TELEGRAM_CHAT_ID"] = "-100777"
+
+    def tearDown(self):
+        telegram.STATE_PATH = self._orig_state_path
+        telegram.api_raw = self._orig_api_raw
+        os.environ.pop("AGENT_TELEGRAM_CHAT_ID", None)
+        self._tmp.cleanup()
+
+    def fake(self, edit_outcome):
+        """edit_outcome: 'ok' | 'not-modified' | 'gone' | 'unreachable'."""
+        def api_raw(method, params, **kw):
+            self.calls.append((method, dict(params)))
+            if method == "sendMessage":
+                return {"message_id": 901}
+            if method == "editMessageText":
+                if edit_outcome == "ok":
+                    return {"message_id": params["message_id"]}
+                if edit_outcome == "not-modified":
+                    raise telegram.TelegramError("telegram editMessageText failed: Bad Request: message is not modified")
+                if edit_outcome == "unreachable":
+                    raise telegram.TelegramError("telegram editMessageText unreachable: timed out")
+                if edit_outcome == "ratelimited":
+                    raise telegram.TelegramError("telegram editMessageText failed: HTTP 429 Too Many Requests")
+                raise telegram.TelegramError("telegram editMessageText failed: Bad Request: message to edit not found")
+            raise AssertionError(method)
+        telegram.api_raw = api_raw
+
+    def send(self, replace="heartbeat", text="▶️ pass starting", **extra):
+        buf = io.StringIO()
+        ns = argparse.Namespace(text=[text], ticket=None, project=None, context=None, replace=replace)
+        for k, v in extra.items():
+            setattr(ns, k, v)
+        with contextlib.redirect_stdout(buf):
+            telegram.cmd_send(ns)
+        return json.loads(buf.getvalue())
+
+    def notices(self):
+        return json.loads(self.state_path.read_text()).get("notices", {})
+
+    def test_first_send_posts_and_records(self):
+        self.fake("ok")
+        out = self.send()
+        self.assertEqual(out, {"message_id": 901, "edited": False})
+        self.assertEqual([m for m, _ in self.calls], ["sendMessage"])
+        self.assertEqual(self.notices(), {"heartbeat": 901})
+
+    def test_second_send_edits_in_place(self):
+        self.fake("ok")
+        self.send()
+        self.calls.clear()
+        out = self.send(text="▶️ pass starting 10:15")
+        self.assertEqual(out, {"message_id": 901, "edited": True})
+        self.assertEqual(self.calls[0][0], "editMessageText")
+        self.assertEqual(self.calls[0][1]["message_id"], 901)
+        self.assertEqual(len(self.calls), 1)                 # no fresh send
+        self.assertEqual(self.notices(), {"heartbeat": 901})
+
+    def test_unchanged_text_counts_as_edited(self):
+        self.fake("not-modified")
+        self.state_path.write_text(json.dumps({"offset": 5, "questions": {}, "notices": {"heartbeat": 42}}))
+        out = self.send()
+        self.assertEqual(out, {"message_id": 42, "edited": True})
+        self.assertEqual([m for m, _ in self.calls], ["editMessageText"])
+
+    def test_gone_message_falls_back_to_fresh_send(self):
+        self.fake("gone")
+        self.state_path.write_text(json.dumps({"offset": 5, "questions": {"9": {"ticket": "ABC-1"}},
+                                               "notices": {"heartbeat": 42}}))
+        out = self.send()
+        self.assertEqual(out, {"message_id": 901, "edited": False})
+        self.assertEqual([m for m, _ in self.calls], ["editMessageText", "sendMessage"])
+        st = json.loads(self.state_path.read_text())
+        self.assertEqual(st["notices"], {"heartbeat": 901})
+        self.assertEqual(st["offset"], 5)                     # unrelated state preserved
+        self.assertEqual(st["questions"], {"9": {"ticket": "ABC-1"}})
+
+    def test_network_failure_never_double_sends(self):
+        self.fake("unreachable")
+        self.state_path.write_text(json.dumps({"offset": 0, "questions": {}, "notices": {"heartbeat": 42}}))
+        with self.assertRaises(SystemExit):
+            self.send()
+        self.assertEqual([m for m, _ in self.calls], ["editMessageText"])
+        self.assertEqual(self.notices(), {"heartbeat": 42})
+
+    def test_ambiguous_api_failure_never_double_sends(self):
+        """Only an explicit gone/uneditable target justifies a fresh post."""
+        self.fake("ratelimited")
+        self.state_path.write_text(json.dumps({"offset": 0, "questions": {}, "notices": {"heartbeat": 42}}))
+        with self.assertRaises(SystemExit):
+            self.send()
+        self.assertEqual([m for m, _ in self.calls], ["editMessageText"])
+        self.assertEqual(self.notices(), {"heartbeat": 42})
+
+    def test_replace_refuses_routing_flags(self):
+        self.fake("ok")
+        with self.assertRaises(SystemExit):
+            self.send(ticket="ABC-1")
+        self.assertEqual(self.calls, [])
+
+    def test_plain_send_does_not_touch_notices(self):
+        self.fake("ok")                     # api() routes through api_raw → sendMessage
+        out = self.send(replace=None)
+        self.assertEqual(out, {"message_id": 901})
+        self.assertFalse(self.state_path.exists())
+
+
 if __name__ == "__main__":
     unittest.main()
