@@ -34,11 +34,15 @@ The team verified these facts on Codex CLI 0.151.0. The test repo was
 | Codex fires the SessionStart hook | No. |
 | A Codex plugin manifest accepts a `hooks` key | No. The validator's `allowed_keys` omits `hooks`. The bundled plugin guidance says to omit it. |
 | Codex exports a harness marker | Yes — `CODEX_THREAD_ID`, `CODEX_SESSION_ID`, `CODEX_SANDBOX`. |
+| Codex sets any `CLAUDE_*` variable | No. A probe from a clean environment shows none. |
+| `codex plugin marketplace upgrade` refreshes a local marketplace | No. It reports "No configured Git marketplaces to upgrade." |
+| `codex plugin add <plugin>@<marketplace>` re-copies an edited clone | Yes, at the same version. No version change is needed. |
 
-**Caveat on the last row.** The probe ran from a Claude Code shell, so the Codex
-process inherited `CLAUDECODE=1` and the other `CLAUDE_*` variables from the
-parent. Those are contamination, not Codex behavior. The `CODEX_*` variables are
-Codex's own. Step 7 of the test plan re-checks this from a clean terminal.
+**How the team checked the marker.** A first probe ran from a Claude Code shell.
+That Codex process inherited `CLAUDECODE=1` and the other `CLAUDE_*` variables
+from its parent. A second probe ran under `env -i` with only `HOME`, `PATH`,
+`TERM` and `SHELL`. It showed the `CODEX_*` variables and no `CLAUDE_*` variable.
+So `CLAUDECODE` belongs to Claude Code, and `CODEX_THREAD_ID` belongs to Codex.
 
 ## Decisions taken
 
@@ -108,12 +112,22 @@ Note the paths outside `dev-workflow/`: `worktree` reaches into `dev-process/`,
 Codex advertises all 8 skills. `ticket-loop` and `ticket-loop-parent` cannot run
 there: they call `claude -p` and they dispatch Claude subagents.
 
-Add a first step to both SKILL.md files. When `CODEX_THREAD_ID` is set, or when
-no Claude Code marker is present, stop. Say that the autonomous tiers are Claude
-Code only, and point the user at the v1 session skills. This matches how
-`agent.enabled` already gates these skills — refuse, do not half-run.
+Add a first step to both SKILL.md files:
 
-The exact marker test depends on test-plan step 7.
+```sh
+if [ -n "${CODEX_THREAD_ID:-}" ] || [ -z "${CLAUDECODE:-}" ]; then
+  echo "ticket-loop runs on Claude Code only. Use /standup, /worktree, /cleanup."
+  exit 1
+fi
+```
+
+Stop there. Say that the autonomous tiers are Claude Code only, and point the
+user at the v1 session skills. This matches how `agent.enabled` already gates
+these skills — refuse, do not half-run.
+
+The test carries both halves on purpose. `CODEX_THREAD_ID` catches Codex.
+`CLAUDECODE` unset catches any other harness. A Codex process launched from a
+Claude Code shell inherits `CLAUDECODE=1`, so the first half must come first.
 
 ## Change 3 — docs
 
@@ -124,9 +138,9 @@ In `README.md`:
 - State that v2 and v3 run on Claude Code only, with the one-line reason.
 - State that Codex gets no session brief. Tell Codex users to run `/standup`.
 - Describe how to refresh a local marketplace after an edit. `codex plugin
-  marketplace upgrade` refreshes Git marketplaces only. A local marketplace needs
-  a version change, a reinstall, and a new thread. Confirm the exact steps in
-  test-plan step 6 before writing them down.
+  marketplace upgrade` refreshes Git marketplaces only. For a local marketplace,
+  run `codex plugin add <plugin>@<marketplace>` again. It re-copies the clone at
+  the same version. Start a new thread to pick up the change.
 
 In `AGENTS.md`: replace the stale copy of `CLAUDE.md` with a short Codex-side
 file that points at the same conventions.
@@ -156,10 +170,9 @@ to an existing check. Keep it out of this scope.
 4. In Codex, confirm a skill resolves `DW_ROOT` and runs `validate.py`.
 5. In Codex, confirm `/worktree` resolves `dev-process/scripts/worktree-reset.sh`
    and `/release` resolves `skills/ticket-loop/telegram.py`.
-6. Determine and record the true refresh procedure for a local marketplace after
-   an edit to the clone.
-7. From a clean terminal, with no Claude Code parent process, run `codex exec`
-   and print the environment. Confirm which markers are present. Pick the guard
-   test from the result.
-8. In Codex, invoke `/ticket-loop`. It must refuse with the guard message.
-9. In Claude Code, invoke `/ticket-loop`. The guard must not fire.
+6. In Codex, invoke `/ticket-loop` and `/ticket-loop-parent`. Both must refuse
+   with the guard message.
+7. In Claude Code, invoke `/ticket-loop`. The guard must not fire.
+
+Reinstall the plugin into Codex between edits. Run
+`codex plugin add dev-workflow@dev-workflow`, then start a new thread.
