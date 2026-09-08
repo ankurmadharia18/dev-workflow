@@ -44,10 +44,22 @@ for name in ticket-loop ticket-loop-parent; do
 done
 
 for name in setup worktree standup cleanup release blog-from-session; do
-  grep -q 'CODEX_THREAD_ID' "$ROOT/skills/$name/SKILL.md" \
+  grep -q 'runs on Claude Code only' "$ROOT/skills/$name/SKILL.md" \
     && fail "v1 skill skills/$name/SKILL.md must NOT carry the guard" \
     || pass "no guard in skills/$name/SKILL.md"
 done
+
+# --- each loop skill's guard message must name that skill, not the other one ---
+grep -q 'ticket-loop-parent runs on Claude Code only\.' "$ROOT/skills/ticket-loop-parent/SKILL.md" \
+  && pass "ticket-loop-parent guard message names ticket-loop-parent" \
+  || fail "ticket-loop-parent guard message missing or misworded"
+
+if grep -q 'ticket-loop runs on Claude Code only\.' "$ROOT/skills/ticket-loop/SKILL.md" \
+  && ! grep -q 'ticket-loop-parent runs on Claude Code only\.' "$ROOT/skills/ticket-loop/SKILL.md"; then
+  pass "ticket-loop guard message names ticket-loop (not ticket-loop-parent)"
+else
+  fail "ticket-loop guard message missing, misworded, or matching ticket-loop-parent's text"
+fi
 
 # --- the guard must come FIRST: before its file's config section and ------
 # before the DW_ROOT paragraph, not just present somewhere in the file.

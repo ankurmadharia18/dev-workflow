@@ -38,8 +38,9 @@ the [dev-process playbook](dev-process/README.md).
 
 ## 1. Quickstart
 
-**You need:** [Claude Code](https://docs.anthropic.com/en/docs/claude-code) with
-your tracker connected (Linear's MCP, or a `LINEAR_API_KEY` for the headless
+**You need:** [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or the
+[Codex CLI](https://developers.openai.com/codex/cli) (0.151+), with your tracker
+connected (Linear's MCP, or a `LINEAR_API_KEY` for the headless
 loop). Only for the autonomous loop and release announcements: a Telegram bot
 token + group chat id, and a GitHub token for PRs — all injected via env vars,
 enumerated in [`skills/ticket-loop/env.example`](skills/ticket-loop/env.example).
@@ -60,6 +61,23 @@ enumerated in [`skills/ticket-loop/env.example`](skills/ticket-loop/env.example)
    claude --plugin-dir <path-to-this-clone>
    ```
 
+   On the Codex CLI, the same repo installs as a Codex plugin:
+
+   ```
+   codex plugin marketplace add singlas/dev-workflow
+   codex plugin add dev-workflow@dev-workflow
+   ```
+
+   Two differences on Codex. There is **no session brief** — Codex 0.151 does not
+   accept a hook from a plugin manifest, so start a session with `/standup`
+   instead. And the autonomous tiers (`/ticket-loop`, `/ticket-loop-parent`)
+   refuse to run: they need `claude -p` and Claude subagents. The six session
+   skills work the same on both.
+
+   Developing against a **local** marketplace: `codex plugin marketplace upgrade`
+   refreshes Git marketplaces only. To pick up an edit to a local clone, re-run
+   `codex plugin add dev-workflow@dev-workflow` and start a new thread.
+
    It provides `/setup`, `/worktree`, `/standup`, `/cleanup`, `/release`,
    `/ticket-loop`, and `/blog-from-session`. Opening a session in a repo that already has a
    `dev-workflow.yml` auto-orients you (a SessionStart hook injects a short brief;
@@ -70,6 +88,10 @@ enumerated in [`skills/ticket-loop/env.example`](skills/ticket-loop/env.example)
    [`dev-workflow.example.yml`](dev-workflow/dev-workflow.example.yml) to your
    repo root by hand and edit the values (branch model, tracker team/roles,
    test/lint commands, tightened guardrails).
+
+   **Codex users:** Codex reads `AGENTS.md`, not `CLAUDE.md`. A repo that has only
+   a `CLAUDE.md` gives you the skills but none of its own conventions. Copy or
+   symlink it: `ln -s CLAUDE.md AGENTS.md`.
 
 3. **Validate it.** `/setup` already validates what it writes. If you edited the
    config by hand, run the validator yourself — from your repo root, pointing at
