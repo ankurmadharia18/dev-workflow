@@ -27,11 +27,14 @@ or touches anything else. Configuration is the human's to own.
 ## Resolving the bundled framework files
 
 This skill reads two files that ship with the plugin. Resolve them with
-`${CLAUDE_PLUGIN_ROOT}` (Claude Code sets it for plugin skills); from a framework
-checkout, drop the prefix and use the repo-relative path:
+`${CLAUDE_PLUGIN_ROOT}` when Claude Code sets it, else with `${DW_ROOT}` (see the
+preamble above), else — from a framework checkout — drop the prefix and use the
+repo-relative path. Write `${ROOT}` below for whichever of the two applies:
 
-- example config — `${CLAUDE_PLUGIN_ROOT}/dev-workflow/dev-workflow.example.yml`
-- validator — `uv run "${CLAUDE_PLUGIN_ROOT}/dev-workflow/validate.py" dev-workflow.yml`
+- example config — `${ROOT}/dev-workflow/dev-workflow.example.yml`
+- validator — `uv run "${ROOT}/dev-workflow/validate.py" dev-workflow.yml`
+
+Set it once: `ROOT="${CLAUDE_PLUGIN_ROOT:-${DW_ROOT:-.}}"`
 
 ## 1. Check prerequisites (report, don't fail hard)
 
@@ -101,11 +104,12 @@ file, nothing else.**
 Always validate what's on disk before declaring success:
 
 ```bash
-uv run "${CLAUDE_PLUGIN_ROOT}/dev-workflow/validate.py" dev-workflow.yml
+ROOT="${CLAUDE_PLUGIN_ROOT:-${DW_ROOT:-.}}"
+uv run "${ROOT}/dev-workflow/validate.py" dev-workflow.yml
 # -> OK: dev-workflow.yml    (or one ERROR: line per violation)
 ```
 
-If `uv` is absent, fall back to `python3 "${CLAUDE_PLUGIN_ROOT}/dev-workflow/validate.py"
+If `uv` is absent, fall back to `python3 "${ROOT}/dev-workflow/validate.py"
 dev-workflow.yml` (PyYAML required for the validator). Fix any reported errors
 with the user before moving on — a config that doesn't validate will trip every
 skill.

@@ -82,4 +82,31 @@ for f in "$ROOT"/skills/*/SKILL.md; do
   fi
 done
 
+# --- bundled paths outside dev-workflow/ must honour DW_ROOT ---------------
+grep -q 'WT_ROOT="${CLAUDE_PLUGIN_ROOT:-${DW_ROOT:-}}"' "$ROOT/skills/worktree/SKILL.md" \
+  && pass "worktree WT_ROOT honours DW_ROOT" \
+  || fail "worktree WT_ROOT does not honour DW_ROOT"
+
+# setup routes both bundled paths through one ROOT= line
+grep -q 'ROOT="${CLAUDE_PLUGIN_ROOT:-${DW_ROOT:-.}}"' "$ROOT/skills/setup/SKILL.md" \
+  && pass "setup defines ROOT from CLAUDE_PLUGIN_ROOT then DW_ROOT" \
+  || fail "setup does not define ROOT from DW_ROOT"
+
+grep -q '${ROOT}/dev-workflow/dev-workflow.example.yml' "$ROOT/skills/setup/SKILL.md" \
+  && pass "setup example-config path uses ROOT" \
+  || fail "setup example-config path does not use ROOT"
+
+grep -q '${ROOT}/dev-workflow/validate.py' "$ROOT/skills/setup/SKILL.md" \
+  && pass "setup validator path uses ROOT" \
+  || fail "setup validator path does not use ROOT"
+
+# setup must no longer hardcode the Claude variable in those two paths
+grep -q '${CLAUDE_PLUGIN_ROOT}/dev-workflow/validate.py' "$ROOT/skills/setup/SKILL.md" \
+  && fail "setup still hardcodes CLAUDE_PLUGIN_ROOT for the validator" \
+  || pass "setup no longer hardcodes CLAUDE_PLUGIN_ROOT for the validator"
+
+grep -q 'DW_ROOT}/skills/ticket-loop/telegram.py' "$ROOT/skills/release/SKILL.md" \
+  && pass "release telegram fallback honours DW_ROOT" \
+  || fail "release telegram fallback does not honour DW_ROOT"
+
 exit "$FAIL"

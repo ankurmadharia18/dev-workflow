@@ -64,8 +64,9 @@ else DW="uv run dev-workflow/dw-config.py"; fi                                  
 whole branch model follows this repo's names (never assume `dev`/`main`):
 
 ```bash
-# script path: plugin install first, framework-checkout fallback second
-WT="${CLAUDE_PLUGIN_ROOT:+$CLAUDE_PLUGIN_ROOT/}dev-process/scripts/worktree-reset.sh"
+# script path: Claude plugin root, then DW_ROOT (other harness), then checkout
+WT_ROOT="${CLAUDE_PLUGIN_ROOT:-${DW_ROOT:-}}"
+WT="${WT_ROOT:+$WT_ROOT/}dev-process/scripts/worktree-reset.sh"
 [ -f "$WT" ] || WT="dev-process/scripts/worktree-reset.sh"
 WORKTREE_TRUNK="<repo.base_branch>" WORKTREE_PROD="<repo.prod_branch>" \
   WORKTREE_DEPS_CMD="<quality.bootstrap>" bash "$WT" [args]

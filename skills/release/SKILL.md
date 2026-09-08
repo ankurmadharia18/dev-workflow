@@ -212,7 +212,8 @@ Merging is the human's call. Once it's merged — they tell you, or you confirm 
 ```bash
 dw-telegram send "🚀 Released v<new> — <one-line theme>. <3-6 highlight bullets>"
 # fallbacks when the symlink isn't installed:
-#   python3 "${CLAUDE_PLUGIN_ROOT}/skills/ticket-loop/telegram.py" send "…"   (plugin install)
+#   python3 "${CLAUDE_PLUGIN_ROOT}/skills/ticket-loop/telegram.py" send "…"   (plugin install, Claude Code)
+#   python3 "${DW_ROOT}/skills/ticket-loop/telegram.py" send "…"              (plugin install, other harness)
 #   python3 /opt/dev-workflow/bin/telegram.py send "…"                        (hardened /opt, or the framework clone's copy)
 ```
 
