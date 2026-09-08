@@ -1,22 +1,23 @@
 # Codex CLI harness support (v1 session skills) — design
 
 **Date:** 2026-09-08
-**Status:** approved design, pre-implementation
+**Status:** approved design, pre-implementation. Revision 2, after a Codex review.
 **Scope:** v1 session skills only. v2 and v3 stay Claude Code only.
-**Files touched:** all 7 `skills/*/SKILL.md`, `hooks/hooks.json`,
-`hooks/session-start.sh`, new `.codex-plugin/`, `scripts/bump-version.sh`,
-`README.md`, `AGENTS.md`
+**Files touched:** 8 `skills/*/SKILL.md`, `README.md`, `AGENTS.md`
 
 ## Summary
 
-Make the dev-workflow plugin install and run on the Codex CLI as well as Claude
-Code. A Codex user installs the same plugin from the same repo. The user then
-runs `/setup`, `/worktree`, `/standup`, `/cleanup`, `/release` and
-`/blog-from-session` the same way.
+Make the dev-workflow plugin work on the Codex CLI as well as Claude Code. A
+Codex user installs the same plugin from the same repo, then runs `/setup`,
+`/worktree`, `/standup`, `/cleanup`, `/release` and `/blog-from-session`.
 
 The autonomous tiers stay on Claude Code. `cron-run.sh` calls `claude -p`.
 `usage-parse.py` reads the Claude JSON envelope. The Docker image installs the
-`claude` CLI. This design does not change them.
+`claude` CLI. The `ticket-loop` and `ticket-loop-parent` skills use Claude
+subagents. This design does not port them. It makes them refuse on Codex.
+
+The work is two changes: one new rung on the root-resolution ladder that every
+skill already has, and a harness guard on the two loop skills. Plus docs.
 
 ## Verified facts
 
@@ -25,114 +26,140 @@ The team verified these facts on Codex CLI 0.151.0. The test repo was
 
 | Fact | Result |
 |---|---|
-| Codex reads `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` | Yes. All 7 skills loaded as `dev-workflow:<name>`. |
+| Codex reads `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` | Yes. All 8 skills loaded as `dev-workflow:<name>`. |
 | Codex copies the whole repo into its plugin cache | Yes — `~/.codex/plugins/cache/dev-workflow/dev-workflow/<version>/`. |
-| Framework scripts keep the same relative path | Yes — `<root>/dev-workflow/validate.py` next to `<root>/skills/`. |
+| Framework files keep the same relative path | Yes — `<root>/dev-workflow/`, `<root>/dev-process/` and `<root>/skills/` all present. |
 | `CLAUDE_PLUGIN_ROOT` or `PLUGIN_ROOT` in the shell | No. Both are unset. |
 | Codex gives the model the absolute SKILL.md path | Yes — `<root>/skills/setup/SKILL.md`. |
-| Codex fires the SessionStart hook | No. The manifest declares no hook path. |
-| Codex hook event names | The binary carries `SessionStart`, `PreToolUse`, `PostToolUse`, `SessionEnd`, `SubagentStart`, `SubagentStop`, `UserPromptSubmit`, `PreCompact`, `PostCompact` and `Interrupt`. |
+| Codex fires the SessionStart hook | No. |
+| A Codex plugin manifest accepts a `hooks` key | No. The validator's `allowed_keys` omits `hooks`. The bundled plugin guidance says to omit it. |
+| Codex exports a harness marker | Yes — `CODEX_THREAD_ID`, `CODEX_SESSION_ID`, `CODEX_SANDBOX`. |
 
-A local marketplace takes a snapshot of the clone. An edit to the clone does not
-reach Codex until the user runs `codex plugin marketplace upgrade` and installs
-again.
+**Caveat on the last row.** The probe ran from a Claude Code shell, so the Codex
+process inherited `CLAUDECODE=1` and the other `CLAUDE_*` variables from the
+parent. Those are contamination, not Codex behavior. The `CODEX_*` variables are
+Codex's own. Step 7 of the test plan re-checks this from a clean terminal.
 
-## Problem 1 — the skills cannot find the framework
+## Decisions taken
 
-Every skill locates its scripts through `${CLAUDE_PLUGIN_ROOT}`. Codex never
-sets that variable. Each such command fails on Codex.
+1. **No `.codex-plugin/` manifest.** Codex already loads the skills from
+   `.claude-plugin/`. Without a `hooks` key, a second manifest buys only display
+   metadata, and it costs five version-coupling points: `.version-bump.json`,
+   `dev-workflow.yml`, `scripts/changelog.sh`, `scripts/howto-broadcast.sh` and
+   the `/release` staging path. Not worth it.
+2. **No SessionStart hook on Codex.** Codex 0.151 has no supported way to take
+   one from a plugin. A Codex user starts a session with `/standup` instead. No
+   skill depends on the brief.
+3. **The loop skills refuse on Codex.** `ticket-loop` and `ticket-loop-parent`
+   stop with a clear message rather than fail halfway.
 
-### The fix
+## Change 1 — a fourth rung on the root ladder
 
-Each SKILL.md gets one "locate the framework" step. The step runs before the
-first script call. The step reads:
+Every skill already resolves the framework root with the same three-rung ladder:
 
-> Set `DW` to `$CLAUDE_PLUGIN_ROOT` when that variable is set. Otherwise set `DW`
-> to the directory two levels above this SKILL.md file. Use `$DW/dev-workflow/`
-> for every framework script.
+```sh
+if command -v dw-config …; then DW="dw-config"                                    # PATH install
+elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then DW="uv run ${CLAUDE_PLUGIN_ROOT}/…"   # plugin install
+else DW="uv run dev-workflow/dw-config.py"; fi                                    # framework checkout
+```
 
-Claude Code sets the variable, so Claude Code behavior does not change. Codex
-falls through to the path anchor. The design adds no marker file and no new
-state.
+`DW` holds a **command**, not a directory. Do not reassign it.
 
-The 7 files are `skills/setup/`, `skills/worktree/`, `skills/standup/`,
-`skills/cleanup/`, `skills/release/`, `skills/blog-from-session/` and
-`skills/ticket-loop/` SKILL.md. The `ticket-loop` files get the same edit for
-consistency. Their runner stays Claude Code only.
-
-## Problem 2 — the SessionStart hook does not fire
-
-Claude Code finds `hooks/hooks.json` on its own. Codex needs an explicit path in
-the manifest.
-
-### The fix
-
-Add `.codex-plugin/plugin.json` with these keys:
-
-- `name`, `version`, `description`, `author`, `license`, `repository`, `homepage`
-- `"skills": "./skills/"`
-- `"hooks": "./hooks/hooks.json"`
-- an `interface` block — display name, short description, category
-
-Add `.codex-plugin/marketplace.json` that mirrors the Claude marketplace file.
-
-Keep the logic in `hooks/session-start.sh` as it is. The hook wire schema matches
-Claude's schema. Change only the comment that says "Claude Code only".
-
-**Risk — the hook may still not fire.** The team has not tested a Codex hook from
-this plugin. The `${PLUGIN_ROOT}` token in `hooks.json` may need a different
-spelling on Codex, or Codex may not run plugin hooks in `codex exec` at all. If
-the hook does not fire after the work, record that fact and tell Codex users to
-start a session with `/standup`. The brief is a convenience. No skill depends on
-it.
-
-## Problem 3 — version drift between two manifests
-
-Two manifests now carry the version. `scripts/bump-version.sh` writes one.
+On Codex the first rung misses unless the user hardened the install, the second
+rung misses because the variable is unset, and the third rung misses because the
+cwd is the target repo, not the framework checkout. The ladder falls through to a
+path that does not exist.
 
 ### The fix
 
-Extend `.version-bump.json` so the bump writes both manifests. Extend
-`scripts/bump-version.sh --check` to fail when the two versions differ.
+Add a rung between the second and the third. The rung uses the absolute SKILL.md
+path that the harness shows the agent. The agent interpolates that path; no shell
+variable holds it. Introduce a new variable named `DW_ROOT` for the directory, so
+nothing collides with `DW`.
 
-## Problem 4 — the docs describe one harness
+> Set `DW_ROOT` as follows. Use `$CLAUDE_PLUGIN_ROOT` when that variable is set.
+> Otherwise, when this SKILL.md sits under a plugin cache, use the directory two
+> levels above this file, quoted, written out in full. Otherwise leave `DW_ROOT`
+> empty and use paths relative to the framework checkout.
 
-### The fix
+Claude Code sets `CLAUDE_PLUGIN_ROOT`, so its behavior does not change.
+
+### Every site to change
+
+16 references across 9 files.
+
+| File | Sites |
+|---|---|
+| `skills/blog-from-session/SKILL.md` | ladder (line 33) |
+| `skills/cleanup/SKILL.md` | ladder (36) |
+| `skills/standup/SKILL.md` | ladder (36) |
+| `skills/setup/SKILL.md` | ladder (63), prose (30), example config (33), validator (34, 95, 99) |
+| `skills/worktree/SKILL.md` | ladder (40), `WT=` → `dev-process/scripts/worktree-reset.sh` (59) |
+| `skills/release/SKILL.md` | ladder (59), `telegram.py` comment (206) |
+| `skills/ticket-loop/SKILL.md` | ladder (36) |
+| `skills/ticket-loop-parent/SKILL.md` | ladder (74) |
+| `hooks/hooks.json` | line 9 — leave as is; the hook is Claude Code only |
+
+Note the paths outside `dev-workflow/`: `worktree` reaches into `dev-process/`,
+`release` reaches into `skills/ticket-loop/`. `DW_ROOT` must serve all of them.
+
+## Change 2 — a harness guard on the loop skills
+
+Codex advertises all 8 skills. `ticket-loop` and `ticket-loop-parent` cannot run
+there: they call `claude -p` and they dispatch Claude subagents.
+
+Add a first step to both SKILL.md files. When `CODEX_THREAD_ID` is set, or when
+no Claude Code marker is present, stop. Say that the autonomous tiers are Claude
+Code only, and point the user at the v1 session skills. This matches how
+`agent.enabled` already gates these skills — refuse, do not half-run.
+
+The exact marker test depends on test-plan step 7.
+
+## Change 3 — docs
 
 In `README.md`:
 
 - Change the prerequisite line to "Claude Code or Codex CLI".
-- Add the Codex install block next to the Claude block:
-  `codex plugin marketplace add singlas/dev-workflow` then
-  `codex plugin add dev-workflow`.
-- Add a note that a local marketplace snapshots the clone. Name the refresh
-  command.
-- State that v2 and v3 run on Claude Code only. Give the reason in one line.
+- Add the Codex install block beside the Claude block.
+- State that v2 and v3 run on Claude Code only, with the one-line reason.
+- State that Codex gets no session brief. Tell Codex users to run `/standup`.
+- Describe how to refresh a local marketplace after an edit. `codex plugin
+  marketplace upgrade` refreshes Git marketplaces only. A local marketplace needs
+  a version change, a reinstall, and a new thread. Confirm the exact steps in
+  test-plan step 6 before writing them down.
 
-In `AGENTS.md`: replace the stale copy of `CLAUDE.md`. Write a short Codex-side
+In `AGENTS.md`: replace the stale copy of `CLAUDE.md` with a short Codex-side
 file that points at the same conventions.
 
-In `skills/setup/SKILL.md`: accept either the `claude` binary or the `codex`
-binary in the prereq check.
-
-Also warn in `README.md` and in `/setup`: Codex reads `AGENTS.md`, not
+Warn in `README.md` and in `skills/setup/SKILL.md`: Codex reads `AGENTS.md`, not
 `CLAUDE.md`. A target repo with only a `CLAUDE.md` gives a Codex user the skills
 but none of the repo's own instructions. The test repo `pubx-app` has this gap
 today.
 
+`/setup` has no harness-binary check today. Adding one is new work, not a change
+to an existing check. Keep it out of this scope.
+
 ## Out of scope
 
-- `skills/ticket-loop/cron-run.sh` and the `claude -p` call
-- `skills/ticket-loop/usage-parse.py` and the Claude JSON envelope
-- `skills/ticket-loop/orchestrator/`
-- `skills/ticket-loop/docker/` and `loop-mcp.json`
+- `skills/ticket-loop/cron-run.sh`, `usage-parse.py`, `orchestrator/`, `docker/`
+- Any `.codex-plugin/` manifest
+- A SessionStart hook on Codex
+- A harness-binary prereq check in `/setup`
 
 ## Test plan
 
-1. Install the plugin from this clone into Claude Code. Run `/standup` and the
-   read-only path of `/worktree` against `pubx-app`. Both must behave as before.
-2. Install the plugin from this clone into Codex. Run the same two skills.
-3. Confirm that a Codex skill resolves `$DW` and runs `validate.py`.
-4. Confirm whether the SessionStart hook fires on Codex. Record the result.
-5. Run `scripts/bump-version.sh --check`. It must pass.
-6. Change one manifest version by hand. Run `--check` again. It must fail.
+1. Install from this clone into Claude Code. Run `/standup` and the read-only
+   path of `/worktree` against `pubx-app`. Behavior must not change.
+2. In Claude Code, run `/setup` against a scratch repo and `/cleanup --help`-level
+   inspection. Confirm the validator and example-config paths still resolve.
+3. Install from this clone into Codex. Run `/standup` against `pubx-app`.
+4. In Codex, confirm a skill resolves `DW_ROOT` and runs `validate.py`.
+5. In Codex, confirm `/worktree` resolves `dev-process/scripts/worktree-reset.sh`
+   and `/release` resolves `skills/ticket-loop/telegram.py`.
+6. Determine and record the true refresh procedure for a local marketplace after
+   an edit to the clone.
+7. From a clean terminal, with no Claude Code parent process, run `codex exec`
+   and print the environment. Confirm which markers are present. Pick the guard
+   test from the result.
+8. In Codex, invoke `/ticket-loop`. It must refuse with the guard message.
+9. In Claude Code, invoke `/ticket-loop`. The guard must not fire.
