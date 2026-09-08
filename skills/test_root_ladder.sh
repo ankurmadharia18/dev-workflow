@@ -109,4 +109,27 @@ grep -q 'DW_ROOT}/skills/ticket-loop/telegram.py' "$ROOT/skills/release/SKILL.md
   && pass "release telegram fallback honours DW_ROOT" \
   || fail "release telegram fallback does not honour DW_ROOT"
 
+# --- setup's ROOT= definition must precede its own uses --------------------
+# A SKILL.md is read top to bottom by an agent, so `${ROOT}` in the two
+# bundled-file bullets must appear AFTER the `ROOT=...` line that defines it,
+# not before. Presence-only grep cannot catch a defined-after-use ordering -
+# this pins position, the same way the rung-order check above does.
+SETUP="$ROOT/skills/setup/SKILL.md"
+section_start="$(grep -n '^## Resolving the bundled framework files' "$SETUP" | head -1 | cut -d: -f1)"
+section_end="$(awk -v s="$section_start" 'NR>s && /^## /{print NR; exit}' "$SETUP")"
+if [ -n "$section_start" ] && [ -n "$section_end" ]; then
+  section="$(sed -n "${section_start},${section_end}p" "$SETUP")"
+  def_line="$(printf '%s\n' "$section" | grep -n 'ROOT="${CLAUDE_PLUGIN_ROOT:-${DW_ROOT:-.}}"' | head -1 | cut -d: -f1)"
+  example_use_line="$(printf '%s\n' "$section" | grep -n '${ROOT}/dev-workflow/dev-workflow.example.yml' | head -1 | cut -d: -f1)"
+  validator_use_line="$(printf '%s\n' "$section" | grep -n '${ROOT}/dev-workflow/validate.py' | head -1 | cut -d: -f1)"
+  if [ -n "$def_line" ] && [ -n "$example_use_line" ] && [ -n "$validator_use_line" ] \
+    && [ "$def_line" -lt "$example_use_line" ] && [ "$def_line" -lt "$validator_use_line" ]; then
+    pass "setup defines ROOT before using it in the bundled-files section"
+  else
+    fail "setup's ROOT= definition does not precede its uses (def_line=$def_line example_use_line=$example_use_line validator_use_line=$validator_use_line)"
+  fi
+else
+  fail "could not locate the 'Resolving the bundled framework files' section bounds in $SETUP"
+fi
+
 exit "$FAIL"

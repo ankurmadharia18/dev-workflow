@@ -29,12 +29,14 @@ or touches anything else. Configuration is the human's to own.
 This skill reads two files that ship with the plugin. Resolve them with
 `${CLAUDE_PLUGIN_ROOT}` when Claude Code sets it, else with `${DW_ROOT}` (see the
 preamble above), else — from a framework checkout — drop the prefix and use the
-repo-relative path. Write `${ROOT}` below for whichever of the two applies:
+repo-relative path. Set it once:
+
+`ROOT="${CLAUDE_PLUGIN_ROOT:-${DW_ROOT:-.}}"`
+
+Then use `${ROOT}` for both bundled files:
 
 - example config — `${ROOT}/dev-workflow/dev-workflow.example.yml`
 - validator — `uv run "${ROOT}/dev-workflow/validate.py" dev-workflow.yml`
-
-Set it once: `ROOT="${CLAUDE_PLUGIN_ROOT:-${DW_ROOT:-.}}"`
 
 ## 1. Check prerequisites (report, don't fail hard)
 
