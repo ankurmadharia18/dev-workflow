@@ -79,9 +79,9 @@ enumerated in [`skills/ticket-loop/env.example`](skills/ticket-loop/env.example)
    `codex plugin add dev-workflow@dev-workflow` and start a new thread.
 
    It provides `/setup`, `/worktree`, `/standup`, `/cleanup`, `/release`,
-   `/ticket-loop`, and `/blog-from-session`. Opening a session in a repo that already has a
-   `dev-workflow.yml` auto-orients you (a SessionStart hook injects a short brief;
-   it stays silent in every repo without one).
+   `/ticket-loop`, and `/blog-from-session`. On Claude Code, opening a session in
+   a repo that already has a `dev-workflow.yml` auto-orients you (a SessionStart
+   hook injects a short brief; it stays silent in every repo without one).
 
 2. **Add a config.** Run `/setup` — it checks prereqs and interviews you for the
    required values, writing a validated `dev-workflow.yml`. Or copy

@@ -9,9 +9,42 @@ FAIL=0
 fail() { printf 'FAIL: %s\n' "$1"; FAIL=1; }
 pass() { printf 'ok: %s\n' "$1"; }
 
-# --- the guard under test, kept identical to the one in both SKILL.md ------
+# --- extract the real guard condition from the canonical file, not a hand --
+# copy. A hand copy tests nothing about the SKILL.md files: nothing pinned the
+# `-z "${CLAUDECODE:-}"` half, the `||`, or the order of the two halves, so a
+# change to the real condition (e.g. `||` -> `&&`) could pass this suite while
+# breaking Codex/Claude-Code detection for real. Extract and execute the real
+# line, the same way test_root_ladder.sh extracts the real root ladder instead
+# of hand-copying it.
+CANON_GUARD="$ROOT/skills/ticket-loop/SKILL.md"
+guard_line="$(grep -F 'if [ -n "${CODEX_THREAD_ID:-}" ] || [ -z "${CLAUDECODE:-}" ]; then' "$CANON_GUARD" | head -1)"
+guard_cond="$(printf '%s' "$guard_line" | sed -e 's/^if //' -e 's/; then$//')"
+
+if [ -z "$guard_cond" ]; then
+  fail "could not extract the real harness-guard condition from $CANON_GUARD"
+  guard_cond='false'   # never let an empty extraction resolve to a passing guard
+fi
+
+# CODEX_THREAD_ID must be tested before CLAUDECODE, textually - a Codex process
+# launched from a Claude Code shell inherits CLAUDECODE=1, so the CODEX check
+# must not depend on being second. This pins the order the truth-table cases
+# below cannot: `A || B` and `B || A` give identical results for every case.
+case "$guard_cond" in
+  *'CODEX_THREAD_ID'*'||'*'CLAUDECODE'*)
+    pass "extracted guard condition tests CODEX_THREAD_ID before CLAUDECODE" ;;
+  *)
+    fail "extracted guard condition does not test CODEX_THREAD_ID before CLAUDECODE: $guard_cond" ;;
+esac
+
+# ticket-loop-parent must carry the identical condition - extracting from only
+# one file would miss a divergence introduced in the other.
+parent_line="$(grep -F 'if [ -n "${CODEX_THREAD_ID:-}" ] || [ -z "${CLAUDECODE:-}" ]; then' "$ROOT/skills/ticket-loop-parent/SKILL.md" | head -1)"
+[ -n "$parent_line" ] && [ "$guard_line" = "$parent_line" ] \
+  && pass "ticket-loop and ticket-loop-parent carry the identical guard condition" \
+  || fail "guard condition differs (or is missing) between ticket-loop and ticket-loop-parent"
+
 guard() {
-  if [ -n "${CODEX_THREAD_ID:-}" ] || [ -z "${CLAUDECODE:-}" ]; then
+  if eval "$guard_cond"; then
     printf 'refused'
   else
     printf 'allowed'

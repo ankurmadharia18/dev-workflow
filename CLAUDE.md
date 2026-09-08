@@ -69,3 +69,7 @@ dev-workflow/
   validator has a `test_validate.py` (`python3 dev-workflow/test_validate.py`);
   the orchestrator brain and pre-check have `skills/ticket-loop/orchestrator/test_orch.py`
   and `dev-workflow/test_queue_count.py` (same `python3 <file>` idiom)
+- The `skills/*/SKILL.md` root ladder and harness guard (Codex support) have
+  their own tests: `bash skills/test_root_ladder.sh` and
+  `bash skills/test_harness_guard.sh`. `AGENTS.md` lists the same two — keep
+  both lists in sync

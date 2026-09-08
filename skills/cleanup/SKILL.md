@@ -36,7 +36,7 @@ sets `CLAUDE_PLUGIN_ROOT` for you; other harnesses (Codex) do not. When it is
 unset and this SKILL.md sits inside a plugin cache, export `DW_ROOT` as the
 absolute directory **two levels above this SKILL.md file** — write the path out
 in full, quoted, from the location your harness showed you. Example:
-`export DW_ROOT="$HOME/.codex/plugins/cache/dev-workflow/dev-workflow/0.6.10"`.
+`export DW_ROOT="$HOME/.codex/plugins/cache/dev-workflow/dev-workflow/<version>"`.
 Leave `DW_ROOT` unset when you are working from a framework checkout.
 
 ```bash

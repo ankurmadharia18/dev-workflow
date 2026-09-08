@@ -27,9 +27,19 @@ or touches anything else. Configuration is the human's to own.
 ## Resolving the bundled framework files
 
 This skill reads two files that ship with the plugin. Resolve them with
-`${CLAUDE_PLUGIN_ROOT}` when Claude Code sets it, else with `${DW_ROOT}` (see the
-preamble above), else — from a framework checkout — drop the prefix and use the
-repo-relative path. Set it once:
+`${CLAUDE_PLUGIN_ROOT}` when Claude Code sets it, else with `${DW_ROOT}` (set
+below), else — from a framework checkout — drop the prefix and use the
+repo-relative path.
+
+**Set `DW_ROOT` first, but only when `CLAUDE_PLUGIN_ROOT` is unset.** Claude Code
+sets `CLAUDE_PLUGIN_ROOT` for you; other harnesses (Codex) do not. When it is
+unset and this SKILL.md sits inside a plugin cache, export `DW_ROOT` as the
+absolute directory **two levels above this SKILL.md file** — write the path out
+in full, quoted, from the location your harness showed you. Example:
+`export DW_ROOT="$HOME/.codex/plugins/cache/dev-workflow/dev-workflow/<version>"`.
+Leave `DW_ROOT` unset when you are working from a framework checkout.
+
+Then set `ROOT` once:
 
 `ROOT="${CLAUDE_PLUGIN_ROOT:-${DW_ROOT:-.}}"`
 
@@ -67,13 +77,7 @@ Load its current values in one call and report them, then validate (step 3); off
 to walk through any missing keys the validator flags, editing in place with the
 human's confirmation.
 
-**Set `DW_ROOT` first, but only when `CLAUDE_PLUGIN_ROOT` is unset.** Claude Code
-sets `CLAUDE_PLUGIN_ROOT` for you; other harnesses (Codex) do not. When it is
-unset and this SKILL.md sits inside a plugin cache, export `DW_ROOT` as the
-absolute directory **two levels above this SKILL.md file** — write the path out
-in full, quoted, from the location your harness showed you. Example:
-`export DW_ROOT="$HOME/.codex/plugins/cache/dev-workflow/dev-workflow/0.6.10"`.
-Leave `DW_ROOT` unset when you are working from a framework checkout.
+`DW_ROOT` is already set (see "Resolving the bundled framework files" above).
 
 ```bash
 if command -v dw-config >/dev/null 2>&1 && dw-config 2>&1 | grep -q -- '--batch'; then DW="dw-config"   # hardened install (PATH), only if --batch-capable
