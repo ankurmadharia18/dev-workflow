@@ -24,13 +24,6 @@ happens in subagents with isolated worktrees. The tracker is the state store; th
 only local state is `state.json` in the loop's state dir (the Telegram offset, the
 `last_digest`/`last_scout`/`last_hygiene` dates, and the `idle_pinged` streak flag).
 
-## Per-repo configuration (`dev-workflow.yml`)
-
-**Read the repo's `dev-workflow.yml` at the target-repo root at the start of each
-pass.** Run this preamble ONCE to resolve the config reader and load every key the
-pass uses; the list below explains each. **Never hardcode these; resolve the role,
-then use the repo's own name:**
-
 ## 0. Harness check (run before anything else)
 
 This skill runs on Claude Code only. It shells out to `claude -p` and dispatches
@@ -46,6 +39,13 @@ fi
 
 Stop here when the guard fires. Report the message to the user and do nothing
 else. Do not try to emulate the loop by hand.
+
+## Per-repo configuration (`dev-workflow.yml`)
+
+**Read the repo's `dev-workflow.yml` at the target-repo root at the start of each
+pass.** Run this preamble ONCE to resolve the config reader and load every key the
+pass uses; the list below explains each. **Never hardcode these; resolve the role,
+then use the repo's own name:**
 
 **Set `DW_ROOT` first, but only when `CLAUDE_PLUGIN_ROOT` is unset.** Claude Code
 sets `CLAUDE_PLUGIN_ROOT` for you; other harnesses (Codex) do not. When it is

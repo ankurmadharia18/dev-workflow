@@ -49,4 +49,28 @@ for name in setup worktree standup cleanup release blog-from-session; do
     || pass "no guard in skills/$name/SKILL.md"
 done
 
+# --- the guard must come FIRST: before its file's config section and ------
+# before the DW_ROOT paragraph, not just present somewhere in the file.
+# "run before anything else" means the guard's own line number must be the
+# smallest of the three - an empty lookup fails loudly, never compares blank.
+guard_position_ok() {
+  local file="$1" config_heading="$2"
+  local guard_line config_line dwroot_line
+  guard_line="$(grep -n '^## 0. Harness check' "$file" | head -1 | cut -d: -f1)"
+  config_line="$(grep -n "$config_heading" "$file" | head -1 | cut -d: -f1)"
+  dwroot_line="$(grep -n '\*\*Set `DW_ROOT` first' "$file" | head -1 | cut -d: -f1)"
+  if [ -z "$guard_line" ] || [ -z "$config_line" ] || [ -z "$dwroot_line" ]; then
+    fail "position lookup returned empty in ${file#$ROOT/} (guard_line=$guard_line config_line=$config_line dwroot_line=$dwroot_line)"
+    return
+  fi
+  if [ "$guard_line" -lt "$config_line" ] && [ "$guard_line" -lt "$dwroot_line" ]; then
+    pass "guard sits before the config section and the DW_ROOT paragraph in ${file#$ROOT/}"
+  else
+    fail "guard does not precede the config section/DW_ROOT paragraph in ${file#$ROOT/} (guard_line=$guard_line config_line=$config_line dwroot_line=$dwroot_line)"
+  fi
+}
+
+guard_position_ok "$ROOT/skills/ticket-loop/SKILL.md" '^## Per-repo configuration'
+guard_position_ok "$ROOT/skills/ticket-loop-parent/SKILL.md" '^## Parent configuration'
+
 exit "$FAIL"

@@ -36,6 +36,22 @@ is still independently valid (a developer can run the interactive skills in it
 directly, project-scoped). This skill replaces it only for the parent entry,
 selected by `agent.skill` in config.
 
+## 0. Harness check (run before anything else)
+
+This skill runs on Claude Code only. It shells out to `claude -p` and dispatches
+Claude subagents; neither exists on another harness.
+
+```bash
+if [ -n "${CODEX_THREAD_ID:-}" ] || [ -z "${CLAUDECODE:-}" ]; then
+  echo "ticket-loop-parent runs on Claude Code only."
+  echo "On this harness use the session skills instead: /standup, /worktree, /cleanup, /release."
+  exit 1
+fi
+```
+
+Stop here when the guard fires. Report the message to the user and do nothing
+else. Do not try to emulate the loop by hand.
+
 ## The two planes
 
 - **Management (this skill, the parent checkout):** the Linear team, the
@@ -68,22 +84,6 @@ Layout (the parent repo root = the roster entry's `work_tree`):
 **Read the PARENT repo's `dev-workflow.yml` at the start of each pass.** Run
 this preamble ONCE to resolve the config reader and load every key the pass
 uses; never hardcode any of them:
-
-## 0. Harness check (run before anything else)
-
-This skill runs on Claude Code only. It shells out to `claude -p` and dispatches
-Claude subagents; neither exists on another harness.
-
-```bash
-if [ -n "${CODEX_THREAD_ID:-}" ] || [ -z "${CLAUDECODE:-}" ]; then
-  echo "ticket-loop-parent runs on Claude Code only."
-  echo "On this harness use the session skills instead: /standup, /worktree, /cleanup, /release."
-  exit 1
-fi
-```
-
-Stop here when the guard fires. Report the message to the user and do nothing
-else. Do not try to emulate the loop by hand.
 
 **Set `DW_ROOT` first, but only when `CLAUDE_PLUGIN_ROOT` is unset.** Claude Code
 sets `CLAUDE_PLUGIN_ROOT` for you; other harnesses (Codex) do not. When it is
