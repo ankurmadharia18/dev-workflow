@@ -65,10 +65,14 @@ not a stop (the config can still be written):
   headless loop read it from the environment only, never from config. If absent,
   note that interactive skills using Linear's MCP OAuth still work, but
   `dw-board`/the loop need this key exported.
-- **`AGENTS.md` (Codex only).** When `CODEX_THREAD_ID` is set and the repo has a
-  `CLAUDE.md` but no `AGENTS.md`, report it as a warning: Codex reads `AGENTS.md`,
-  so this repo's own conventions will not load. Offer `ln -s CLAUDE.md AGENTS.md`.
-  This is a warning, not a stop — and never write the file without asking.
+- **`AGENTS.md`.** When the repo has a `CLAUDE.md` but no `AGENTS.md`, report it
+  as a warning on every harness, not just Codex: Codex and most other agents read
+  `AGENTS.md`, so the repo's own conventions load nowhere but Claude Code. The fix
+  is to make `AGENTS.md` canonical and leave `CLAUDE.md` as a one-line import —
+  move the content across, then `echo '@AGENTS.md' > CLAUDE.md`. Claude Code
+  expands that import at session start, so nothing is lost and the two files
+  cannot drift. This is a warning, not a stop — and never move or write either
+  file without asking.
 
 ## 2. Write dev-workflow.yml — only if it's missing
 

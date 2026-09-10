@@ -68,20 +68,23 @@ enumerated in [`skills/ticket-loop/env.example`](skills/ticket-loop/env.example)
    codex plugin add dev-workflow@dev-workflow
    ```
 
-   Two differences on Codex. There is **no session brief** — Codex 0.151 does not
-   accept a hook from a plugin manifest, so start a session with `/standup`
-   instead. And the autonomous tiers (`/ticket-loop`, `/ticket-loop-parent`)
-   refuse to run: they need `claude -p` and Claude subagents. The six session
-   skills work the same on both.
+   One difference on Codex: the autonomous tiers (`/ticket-loop`,
+   `/ticket-loop-parent`) refuse to run — they need `claude -p` and Claude
+   subagents. The six session skills work the same on both harnesses, and so does
+   the session brief.
 
    Developing against a **local** marketplace: `codex plugin marketplace upgrade`
    refreshes Git marketplaces only. To pick up an edit to a local clone, re-run
    `codex plugin add dev-workflow@dev-workflow` and start a new thread.
 
    It provides `/setup`, `/worktree`, `/standup`, `/cleanup`, `/release`,
-   `/ticket-loop`, and `/blog-from-session`. On Claude Code, opening a session in
-   a repo that already has a `dev-workflow.yml` auto-orients you (a SessionStart
-   hook injects a short brief; it stays silent in every repo without one).
+   `/ticket-loop`, and `/blog-from-session`. Opening a session in a repo that
+   already has a `dev-workflow.yml` auto-orients you on **both** harnesses — a
+   SessionStart hook injects a short brief, and it stays silent in every repo
+   without one. Codex finds `hooks/hooks.json` by path, without a `hooks` key in
+   the plugin manifest (its validator rejects that key), and expands
+   `${CLAUDE_PLUGIN_ROOT}` inside the hook command even though it never exports
+   that variable to a skill's shell.
 
 2. **Add a config.** Run `/setup` — it checks prereqs and interviews you for the
    required values, writing a validated `dev-workflow.yml`. Or copy
@@ -89,9 +92,18 @@ enumerated in [`skills/ticket-loop/env.example`](skills/ticket-loop/env.example)
    repo root by hand and edit the values (branch model, tracker team/roles,
    test/lint commands, tightened guardrails).
 
-   **Codex users:** Codex reads `AGENTS.md`, not `CLAUDE.md`. A repo that has only
-   a `CLAUDE.md` gives you the skills but none of its own conventions. Copy or
-   symlink it: `ln -s CLAUDE.md AGENTS.md`.
+   **Make `AGENTS.md` your repo's canonical instruction file.** Codex and most
+   other agents read `AGENTS.md`; Claude Code reads `CLAUDE.md`. Keep the content
+   in `AGENTS.md` and make `CLAUDE.md` a one-line import, so the two can never
+   drift:
+
+   ```
+   echo '@AGENTS.md' > CLAUDE.md
+   ```
+
+   A repo that has only a `CLAUDE.md` gives a Codex user the skills but none of
+   its own conventions. This repo does exactly what it recommends — see its
+   [`AGENTS.md`](AGENTS.md) and [`CLAUDE.md`](CLAUDE.md).
 
 3. **Validate it.** `/setup` already validates what it writes. If you edited the
    config by hand, run the validator yourself — from your repo root, pointing at

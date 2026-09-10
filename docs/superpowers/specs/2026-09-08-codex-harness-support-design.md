@@ -31,7 +31,7 @@ The team verified these facts on Codex CLI 0.151.0. The test repo was
 | Framework files keep the same relative path | Yes — `<root>/dev-workflow/`, `<root>/dev-process/` and `<root>/skills/` all present. |
 | `CLAUDE_PLUGIN_ROOT` or `PLUGIN_ROOT` in the shell | No. Both are unset. |
 | Codex gives the model the absolute SKILL.md path | Yes — `<root>/skills/setup/SKILL.md`. |
-| Codex fires the SessionStart hook | No. |
+| Codex fires the SessionStart hook | **Yes.** Corrected 2026-09-10 — see the note below. |
 | A Codex plugin manifest accepts a `hooks` key | No. The validator's `allowed_keys` omits `hooks`. The bundled plugin guidance says to omit it. |
 | Codex exports a harness marker | Yes — `CODEX_THREAD_ID`, `CODEX_SESSION_ID`, `CODEX_SANDBOX`. |
 | Codex sets any `CLAUDE_*` variable | No. A probe from a clean environment shows none. |
@@ -51,9 +51,10 @@ So `CLAUDECODE` belongs to Claude Code, and `CODEX_THREAD_ID` belongs to Codex.
    metadata, and it costs five version-coupling points: `.version-bump.json`,
    `dev-workflow.yml`, `scripts/changelog.sh`, `scripts/howto-broadcast.sh` and
    the `/release` staging path. Not worth it.
-2. **No SessionStart hook on Codex.** Codex 0.151 has no supported way to take
-   one from a plugin. A Codex user starts a session with `/standup` instead. No
-   skill depends on the brief.
+2. ~~**No SessionStart hook on Codex.**~~ **Withdrawn 2026-09-10.** Codex does
+   fire the hook. See the correction note below. The decision that survives is
+   the narrower one: the manifest still carries no `hooks` key, because the
+   validator rejects it — Codex finds `hooks/hooks.json` by path instead.
 3. **The loop skills refuse on Codex.** `ticket-loop` and `ticket-loop-parent`
    stop with a clear message rather than fail halfway.
 
@@ -136,7 +137,7 @@ In `README.md`:
 - Change the prerequisite line to "Claude Code or Codex CLI".
 - Add the Codex install block beside the Claude block.
 - State that v2 and v3 run on Claude Code only, with the one-line reason.
-- State that Codex gets no session brief. Tell Codex users to run `/standup`.
+- ~~State that Codex gets no session brief.~~ Withdrawn — the brief works on both.
 - Describe how to refresh a local marketplace after an edit. `codex plugin
   marketplace upgrade` refreshes Git marketplaces only. For a local marketplace,
   run `codex plugin add <plugin>@<marketplace>` again. It re-copies the clone at
@@ -157,7 +158,6 @@ to an existing check. Keep it out of this scope.
 
 - `skills/ticket-loop/cron-run.sh`, `usage-parse.py`, `orchestrator/`, `docker/`
 - Any `.codex-plugin/` manifest
-- A SessionStart hook on Codex
 - A harness-binary prereq check in `/setup`
 
 ## Test plan
@@ -176,3 +176,32 @@ to an existing check. Keep it out of this scope.
 
 Reinstall the plugin into Codex between edits. Run
 `codex plugin add dev-workflow@dev-workflow`, then start a new thread.
+
+## Correction — 2026-09-10
+
+**The claim that Codex never fires the SessionStart hook was wrong, and this
+branch shipped it.** Two facts in this document were verified correctly and the
+inference between them was not:
+
+- Codex's plugin validator does reject a `hooks` key in the manifest. Still true.
+- An early probe reported no session brief. Observed, but not reproducible.
+
+Codex discovers `hooks/hooks.json` **by path** under the plugin root, with no
+manifest key involved, and expands `${CLAUDE_PLUGIN_ROOT}` inside the hook
+command — a template token, distinct from the shell variable a skill never
+receives. Re-tested in `~/repos/aws/pubx-app`:
+
+```
+$ codex exec --sandbox read-only "...report any SessionStart context..."
+hook: SessionStart Completed
+This repo uses dev-workflow (CI, but for ticket work) — a dev-workflow.yml is present...
+```
+
+Why the first probe showed no brief is unknown; hook trust had possibly not been
+granted yet. It is not restated here as fact.
+
+What changes: the session brief works on both harnesses, and the docs no longer
+tell Codex users to compensate with `/standup`. What does not change: no
+`.codex-plugin/` manifest, no `hooks` key, and the `DW_ROOT` rung — Codex still
+exports no plugin-root variable to a skill's shell, which is the finding this
+branch actually rests on.
