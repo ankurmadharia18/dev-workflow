@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# SessionStart hook for the dev-workflow plugin (Claude Code only).
+# SessionStart hook for the dev-workflow plugin. Fires on BOTH Claude Code and
+# Codex — Codex discovers hooks/hooks.json by path, with no manifest hooks key.
+# Exits silently unless dev-workflow.yml is in the session's CWD.
 #
 # Purpose: when a session opens in a repo that USES dev-workflow (a dev-workflow.yml
 # sits in the cwd), inject a ~5-line orientation so the session knows the skills are
@@ -55,7 +57,8 @@ Daily loop: /standup to start, /worktree for a fresh branch, work, /cleanup to s
 
 escaped="$(escape_for_json "$context")"
 
-# Claude Code SessionStart context-injection shape. printf (not heredoc) to dodge the
+# SessionStart context-injection shape. Claude Code defined it; Codex accepts the
+# same wire format. printf (not heredoc) to dodge the
 # bash 5.3+ heredoc hang seen in the superpowers hook.
 printf '{\n  "hookSpecificOutput": {\n    "hookEventName": "SessionStart",\n    "additionalContext": "%s"\n  }\n}\n' "$escaped"
 
