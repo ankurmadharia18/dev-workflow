@@ -131,17 +131,18 @@ Ids are a reference aid, not a uniqueness guarantee, and the design does not add
 a lock to make them one: two agents writing the same workspace in the same minute
 is not the case this serves.
 
-**Entry kinds — these seven, and no others:**
+**Entry kinds — these eight, and no others:**
 
-| Kind | Meaning |
-|---|---|
-| `intent` | What this workspace is trying to achieve |
-| `decision` | A choice, with its reason |
-| `next` | A step to take |
-| `blocked` | Something preventing progress |
-| `question` | Unresolved, needs an answer |
-| `note` | Anything else worth carrying |
-| `resolve` | References an earlier entry id and closes it |
+| Kind | Meaning | Closable |
+|---|---|---|
+| `intent` | What this workspace is trying to achieve | no |
+| `decision` | A choice, with its reason | no |
+| `next` | A step to take | yes |
+| `blocked` | Something preventing progress | yes |
+| `question` | Unresolved, needs an answer | yes |
+| `note` | Anything else worth carrying | no |
+| `checkpoint` | `HEAD=<sha> dirty=<n> untracked=<n>` — the mutable state the header deliberately does not hold | no |
+| `resolve` | References an earlier entry id and closes it | n/a |
 
 **Open state is derivable.** A `next`, `blocked` or `question` is OPEN unless a
 later `resolve` names its id. This is what makes an append-only file usable: a
