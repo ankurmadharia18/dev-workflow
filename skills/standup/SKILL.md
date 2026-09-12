@@ -124,6 +124,20 @@ Before recommending a specific ticket, read its body with `get_ticket` so the
 *why* is real (acceptance criteria, the blocker) — not just the title from the
 snapshot.
 
+### Read the handoff first
+
+Before the board, check whether the previous session left a note by running
+`handoff.py show`:
+
+```bash
+HANDOFF="${CLAUDE_PLUGIN_ROOT:-${DW_ROOT:-.}}/dev-workflow/handoff.py"
+python3 "$HANDOFF" show
+```
+
+If it prints a note, summarise it in one or two lines at the top of the brief —
+what was in flight and what is next — and say plainly how far the checkpoint sits
+from HEAD. If it prints `no handoff for …`, say nothing about it.
+
 ## Output — a tight brief, not a wall
 
 Roughly this shape, scannable in ten seconds:

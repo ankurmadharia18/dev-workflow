@@ -103,6 +103,31 @@ Notes that cost time to rediscover:
   then start a new thread. `codex plugin marketplace upgrade` refreshes Git
   marketplaces only, not local ones.
 
+## Handing off between agents
+
+When a session limit forces a switch between Claude Code and Codex, the next
+agent needs the reasoning this one has. Git and the tracker already carry the
+commits and the ticket state; they do not carry why.
+
+**At the start of a session**, run the helper (`handoff.py show`) and read what
+it prints:
+
+    python3 "$HANDOFF" show
+
+**Before you stop, and at each real decision**, append plain Markdown to the
+note — what you are doing, what you decided and why, what is next, what is
+blocked — then record the git state (`handoff.py checkpoint`):
+
+    python3 "$HANDOFF" checkpoint
+
+Write the note for a reader with none of your context. Prose, not a format:
+nothing parses it.
+
+Resolve `$HANDOFF` the way the skills resolve `dw-config.py` — try
+`$CLAUDE_PLUGIN_ROOT/dev-workflow/handoff.py`, then
+`$DW_ROOT/dev-workflow/handoff.py`, then `dev-workflow/handoff.py` from a
+framework checkout. `python3 "$HANDOFF" path` prints the note's location.
+
 ## Tests
 
 Run each file directly:

@@ -259,5 +259,25 @@ class IgnoreTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, ".local/handoff must be git-ignored")
 
 
+class WiringTests(unittest.TestCase):
+    def _repo_file(self, name):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, name)) as fh:
+            return fh.read()
+
+    def test_agents_md_carries_the_handoff_rule(self):
+        body = self._repo_file("AGENTS.md")
+        self.assertIn("handoff.py show", body)
+        self.assertIn("handoff.py checkpoint", body)
+
+    def test_standup_reads_the_handoff(self):
+        self.assertIn("handoff.py show", self._repo_file("skills/standup/SKILL.md"))
+
+    def test_cleanup_writes_a_checkpoint(self):
+        self.assertIn(
+            "handoff.py checkpoint", self._repo_file("skills/cleanup/SKILL.md")
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

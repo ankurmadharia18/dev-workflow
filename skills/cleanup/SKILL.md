@@ -199,6 +199,17 @@ link.** Confirm it returned a real `…/pull/<number>` URL before reporting succ
   ```
 - **Open PR exists** → `gh pr edit --body "<refreshed body>"`.
 
+Record a checkpoint (`handoff.py checkpoint`) so a session resuming on this
+branch knows where the PR got to:
+
+```bash
+HANDOFF="${CLAUDE_PLUGIN_ROOT:-${DW_ROOT:-.}}/dev-workflow/handoff.py"
+python3 "$HANDOFF" checkpoint
+```
+
+Append one line of prose to the note first if anything is still outstanding —
+review comments expected, CI still running, a follow-up already known.
+
 (Hotfix: swap `repo.base_branch` → `repo.prod_branch` so the PR targets prod.)
 
 ## Step 7: Close out completed tickets
