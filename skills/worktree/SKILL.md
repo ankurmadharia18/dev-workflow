@@ -35,9 +35,18 @@ PR, never touches the tracker — that's `cleanup` and `release`.
 keys this skill uses. No `dev-workflow.yml` → the preamble says so and the script's
 own defaults (trunk `dev`, prod `main`) take over.
 
+**Set `DW_ROOT` first, but only when `CLAUDE_PLUGIN_ROOT` is unset.** Claude Code
+sets `CLAUDE_PLUGIN_ROOT` for you; other harnesses (Codex) do not. When it is
+unset and this SKILL.md sits inside a plugin cache, export `DW_ROOT` as the
+absolute directory **two levels above this SKILL.md file** — write the path out
+in full, quoted, from the location your harness showed you. Example:
+`export DW_ROOT="$HOME/.codex/plugins/cache/dev-workflow/dev-workflow/<version>"`.
+Leave `DW_ROOT` unset when you are working from a framework checkout.
+
 ```bash
 if command -v dw-config >/dev/null 2>&1 && dw-config 2>&1 | grep -q -- '--batch'; then DW="dw-config"   # hardened install (PATH), only if --batch-capable
-elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then DW="uv run ${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py" # plugin install
+elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then DW="uv run ${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py" # plugin install (Claude Code)
+elif [ -n "${DW_ROOT:-}" ]; then DW="uv run ${DW_ROOT}/dev-workflow/dw-config.py"                       # plugin install (other harness)
 else DW="uv run dev-workflow/dw-config.py"; fi                                                          # framework checkout
 [ -f dev-workflow.yml ] \
   && $DW dev-workflow.yml --batch repo.base_branch repo.prod_branch quality.bootstrap \
@@ -55,8 +64,9 @@ else DW="uv run dev-workflow/dw-config.py"; fi                                  
 whole branch model follows this repo's names (never assume `dev`/`main`):
 
 ```bash
-# script path: plugin install first, framework-checkout fallback second
-WT="${CLAUDE_PLUGIN_ROOT:+$CLAUDE_PLUGIN_ROOT/}dev-process/scripts/worktree-reset.sh"
+# script path: Claude plugin root, then DW_ROOT (other harness), then checkout
+WT_ROOT="${CLAUDE_PLUGIN_ROOT:-${DW_ROOT:-}}"
+WT="${WT_ROOT:+$WT_ROOT/}dev-process/scripts/worktree-reset.sh"
 [ -f "$WT" ] || WT="dev-process/scripts/worktree-reset.sh"
 WORKTREE_TRUNK="<repo.base_branch>" WORKTREE_PROD="<repo.prod_branch>" \
   WORKTREE_DEPS_CMD="<quality.bootstrap>" bash "$WT" [args]

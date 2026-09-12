@@ -27,11 +27,26 @@ or touches anything else. Configuration is the human's to own.
 ## Resolving the bundled framework files
 
 This skill reads two files that ship with the plugin. Resolve them with
-`${CLAUDE_PLUGIN_ROOT}` (Claude Code sets it for plugin skills); from a framework
-checkout, drop the prefix and use the repo-relative path:
+`${CLAUDE_PLUGIN_ROOT}` when Claude Code sets it, else with `${DW_ROOT}` (set
+below), else — from a framework checkout — drop the prefix and use the
+repo-relative path.
 
-- example config — `${CLAUDE_PLUGIN_ROOT}/dev-workflow/dev-workflow.example.yml`
-- validator — `uv run "${CLAUDE_PLUGIN_ROOT}/dev-workflow/validate.py" dev-workflow.yml`
+**Set `DW_ROOT` first, but only when `CLAUDE_PLUGIN_ROOT` is unset.** Claude Code
+sets `CLAUDE_PLUGIN_ROOT` for you; other harnesses (Codex) do not. When it is
+unset and this SKILL.md sits inside a plugin cache, export `DW_ROOT` as the
+absolute directory **two levels above this SKILL.md file** — write the path out
+in full, quoted, from the location your harness showed you. Example:
+`export DW_ROOT="$HOME/.codex/plugins/cache/dev-workflow/dev-workflow/<version>"`.
+Leave `DW_ROOT` unset when you are working from a framework checkout.
+
+Then set `ROOT` once:
+
+`ROOT="${CLAUDE_PLUGIN_ROOT:-${DW_ROOT:-.}}"`
+
+Then use `${ROOT}` for both bundled files:
+
+- example config — `${ROOT}/dev-workflow/dev-workflow.example.yml`
+- validator — `uv run "${ROOT}/dev-workflow/validate.py" dev-workflow.yml`
 
 ## 1. Check prerequisites (report, don't fail hard)
 
@@ -50,6 +65,14 @@ not a stop (the config can still be written):
   headless loop read it from the environment only, never from config. If absent,
   note that interactive skills using Linear's MCP OAuth still work, but
   `dw-board`/the loop need this key exported.
+- **`AGENTS.md`.** When the repo has a `CLAUDE.md` but no `AGENTS.md`, report it
+  as a warning on every harness, not just Codex: Codex and most other agents read
+  `AGENTS.md`, so the repo's own conventions load nowhere but Claude Code. The fix
+  is to make `AGENTS.md` canonical and leave `CLAUDE.md` as a one-line import —
+  move the content across, then `echo '@AGENTS.md' > CLAUDE.md`. Claude Code
+  expands that import at session start, so nothing is lost and the two files
+  cannot drift. This is a warning, not a stop — and never move or write either
+  file without asking.
 
 ## 2. Write dev-workflow.yml — only if it's missing
 
@@ -58,9 +81,12 @@ Load its current values in one call and report them, then validate (step 3); off
 to walk through any missing keys the validator flags, editing in place with the
 human's confirmation.
 
+`DW_ROOT` is already set (see "Resolving the bundled framework files" above).
+
 ```bash
 if command -v dw-config >/dev/null 2>&1 && dw-config 2>&1 | grep -q -- '--batch'; then DW="dw-config"   # hardened install (PATH), only if --batch-capable
-elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then DW="uv run ${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py" # plugin install
+elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then DW="uv run ${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py" # plugin install (Claude Code)
+elif [ -n "${DW_ROOT:-}" ]; then DW="uv run ${DW_ROOT}/dev-workflow/dw-config.py"                       # plugin install (other harness)
 else DW="uv run dev-workflow/dw-config.py"; fi                                                          # framework checkout
 $DW dev-workflow.yml --batch repo.base_branch repo.prod_branch tracker.provider tracker.team \
   tracker.ticket_prefix quality.test quality.lint agent.enabled=false
@@ -92,11 +118,12 @@ file, nothing else.**
 Always validate what's on disk before declaring success:
 
 ```bash
-uv run "${CLAUDE_PLUGIN_ROOT}/dev-workflow/validate.py" dev-workflow.yml
+ROOT="${CLAUDE_PLUGIN_ROOT:-${DW_ROOT:-.}}"
+uv run "${ROOT}/dev-workflow/validate.py" dev-workflow.yml
 # -> OK: dev-workflow.yml    (or one ERROR: line per violation)
 ```
 
-If `uv` is absent, fall back to `python3 "${CLAUDE_PLUGIN_ROOT}/dev-workflow/validate.py"
+If `uv` is absent, fall back to `python3 "${ROOT}/dev-workflow/validate.py"
 dev-workflow.yml` (PyYAML required for the validator). Fix any reported errors
 with the user before moving on — a config that doesn't validate will trip every
 skill.

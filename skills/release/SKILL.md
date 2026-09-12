@@ -54,9 +54,18 @@ key this skill uses; the list below explains each. (`release` still refuses unle
 `repo.prod_branch` and `deploy.trigger` both come back set — see the safety rules
 above.)
 
+**Set `DW_ROOT` first, but only when `CLAUDE_PLUGIN_ROOT` is unset.** Claude Code
+sets `CLAUDE_PLUGIN_ROOT` for you; other harnesses (Codex) do not. When it is
+unset and this SKILL.md sits inside a plugin cache, export `DW_ROOT` as the
+absolute directory **two levels above this SKILL.md file** — write the path out
+in full, quoted, from the location your harness showed you. Example:
+`export DW_ROOT="$HOME/.codex/plugins/cache/dev-workflow/dev-workflow/<version>"`.
+Leave `DW_ROOT` unset when you are working from a framework checkout.
+
 ```bash
 if command -v dw-config >/dev/null 2>&1 && dw-config 2>&1 | grep -q -- '--batch'; then DW="dw-config"   # hardened install (PATH), only if --batch-capable
-elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then DW="uv run ${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py" # plugin install
+elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then DW="uv run ${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py" # plugin install (Claude Code)
+elif [ -n "${DW_ROOT:-}" ]; then DW="uv run ${DW_ROOT}/dev-workflow/dw-config.py"                       # plugin install (other harness)
 else DW="uv run dev-workflow/dw-config.py"; fi                                                          # framework checkout
 [ -f dev-workflow.yml ] \
   && $DW dev-workflow.yml --batch repo.base_branch repo.prod_branch deploy.trigger deploy.announce \
@@ -203,7 +212,8 @@ Merging is the human's call. Once it's merged — they tell you, or you confirm 
 ```bash
 dw-telegram send "🚀 Released v<new> — <one-line theme>. <3-6 highlight bullets>"
 # fallbacks when the symlink isn't installed:
-#   python3 "${CLAUDE_PLUGIN_ROOT}/skills/ticket-loop/telegram.py" send "…"   (plugin install)
+#   python3 "${CLAUDE_PLUGIN_ROOT}/skills/ticket-loop/telegram.py" send "…"   (plugin install, Claude Code)
+#   python3 "${DW_ROOT}/skills/ticket-loop/telegram.py" send "…"              (plugin install, other harness)
 #   python3 /opt/dev-workflow/bin/telegram.py send "…"                        (hardened /opt, or the framework clone's copy)
 ```
 

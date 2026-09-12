@@ -24,6 +24,22 @@ happens in subagents with isolated worktrees. The tracker is the state store; th
 only local state is `state.json` in the loop's state dir (the Telegram offset, the
 `last_digest`/`last_scout`/`last_hygiene` dates, and the `idle_pinged` streak flag).
 
+## 0. Harness check (run before anything else)
+
+This skill runs on Claude Code only. It shells out to `claude -p` and dispatches
+Claude subagents; neither exists on another harness.
+
+```bash
+if [ -n "${CODEX_THREAD_ID:-}" ] || [ -z "${CLAUDECODE:-}" ]; then
+  echo "ticket-loop runs on Claude Code only."
+  echo "On this harness use the session skills instead: /standup, /worktree, /cleanup, /release."
+  exit 1
+fi
+```
+
+Stop here when the guard fires. Report the message to the user and do nothing
+else. Do not try to emulate the loop by hand.
+
 ## Per-repo configuration (`dev-workflow.yml`)
 
 **Read the repo's `dev-workflow.yml` at the target-repo root at the start of each
@@ -31,9 +47,18 @@ pass.** Run this preamble ONCE to resolve the config reader and load every key t
 pass uses; the list below explains each. **Never hardcode these; resolve the role,
 then use the repo's own name:**
 
+**Set `DW_ROOT` first, but only when `CLAUDE_PLUGIN_ROOT` is unset.** Claude Code
+sets `CLAUDE_PLUGIN_ROOT` for you; other harnesses (Codex) do not. When it is
+unset and this SKILL.md sits inside a plugin cache, export `DW_ROOT` as the
+absolute directory **two levels above this SKILL.md file** — write the path out
+in full, quoted, from the location your harness showed you. Example:
+`export DW_ROOT="$HOME/.codex/plugins/cache/dev-workflow/dev-workflow/<version>"`.
+Leave `DW_ROOT` unset when you are working from a framework checkout.
+
 ```bash
 if command -v dw-config >/dev/null 2>&1 && dw-config 2>&1 | grep -q -- '--batch'; then DW="dw-config"   # hardened install (PATH), only if --batch-capable
-elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then DW="uv run ${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py" # plugin install
+elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then DW="uv run ${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py" # plugin install (Claude Code)
+elif [ -n "${DW_ROOT:-}" ]; then DW="uv run ${DW_ROOT}/dev-workflow/dw-config.py"                       # plugin install (other harness)
 else DW="uv run dev-workflow/dw-config.py"; fi                                                          # framework checkout
 [ -f dev-workflow.yml ] \
   && $DW dev-workflow.yml --batch tracker.team tracker.project= tracker.roles.queue.label tracker.roles.queue.states \
