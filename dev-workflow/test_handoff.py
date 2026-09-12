@@ -136,5 +136,128 @@ class TrailerTests(unittest.TestCase):
             self.assertEqual(untracked, 1)
 
 
+class ShowTests(unittest.TestCase):
+    def test_last_trailer_wins(self):
+        text = (
+            "prose\n"
+            + handoff.make_trailer("a" * 40, 0, 0, "2026-09-12T10:00Z")
+            + "\nmore prose\n"
+            + handoff.make_trailer("b" * 40, 1, 2, "2026-09-12T11:00Z")
+            + "\n"
+        )
+        parsed = handoff.parse_trailer(handoff.last_trailer(text))
+        self.assertEqual(parsed["HEAD"], "b" * 40)
+        self.assertEqual(parsed["dirty"], "1")
+        self.assertEqual(parsed["untracked"], "2")
+
+    def test_no_trailer_returns_none(self):
+        self.assertIsNone(handoff.last_trailer("just prose\nand more\n"))
+
+    def test_prose_mentioning_checkpoint_is_not_a_trailer(self):
+        self.assertIsNone(handoff.last_trailer("I ran checkpoint: it worked\n"))
+
+    def test_compare_current(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _init_repo(tmp)
+            first = _commit(tmp, "a.txt")
+            self.assertIn("current", handoff.compare(first, first, cwd=tmp))
+
+    def test_compare_commits_landed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _init_repo(tmp)
+            first = _commit(tmp, "a.txt")
+            _commit(tmp, "b.txt")
+            head = _commit(tmp, "c.txt")
+            line = handoff.compare(first, head, cwd=tmp)
+            self.assertIn("2 commits landed", line)
+
+    def test_compare_checkout_behind(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _init_repo(tmp)
+            first = _commit(tmp, "a.txt")
+            later = _commit(tmp, "b.txt")
+            line = handoff.compare(later, first, cwd=tmp)
+            self.assertIn("behind the checkpoint by 1", line)
+
+    def test_compare_diverged_names_rebase(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _init_repo(tmp)
+            base = _commit(tmp, "a.txt")
+            handoff._git(["checkout", "--quiet", "-b", "other", base], cwd=tmp)
+            side = _commit(tmp, "side.txt")
+            handoff._git(["checkout", "--quiet", "main"], cwd=tmp)
+            head = _commit(tmp, "main2.txt")
+            line = handoff.compare(side, head, cwd=tmp)
+            self.assertIn("diverged", line)
+            self.assertIn("rebase", line)
+
+    def test_an_oid_naming_a_tree_reports_missing_not_diverged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _init_repo(tmp)
+            head = _commit(tmp, "a.txt")
+            tree = handoff._git(
+                ["rev-parse", "HEAD^{tree}"], cwd=tmp
+            ).stdout.strip()
+            line = handoff.compare(tree, head, cwd=tmp)
+            self.assertIn("missing", line)
+            self.assertNotIn("diverged", line)
+
+    def test_dirty_line_reports_a_change_even_when_the_commit_matches(self):
+        line = handoff.dirty_line(0, 0, 7, 0)
+        self.assertIn("was clean", line)
+        self.assertIn("7", line)
+
+    def test_dirty_line_is_quiet_when_nothing_changed(self):
+        self.assertEqual(handoff.dirty_line(0, 0, 0, 0), "")
+
+
+class ShowVerbTests(unittest.TestCase):
+    """The two cmd_show paths that produce no comparison line at all."""
+
+    def _run_show(self, cwd):
+        import io
+        import contextlib
+        buf = io.StringIO()
+        saved = os.getcwd()
+        os.chdir(cwd)
+        try:
+            with contextlib.redirect_stdout(buf):
+                handoff.cmd_show(["handoff.py", "show"])
+        finally:
+            os.chdir(saved)
+        return buf.getvalue()
+
+    def test_missing_note_says_so_and_lists_others_without_adopting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _init_repo(tmp)
+            _commit(tmp, "a.txt")
+            os.makedirs(handoff.handoff_dir(tmp))
+            with open(os.path.join(handoff.handoff_dir(tmp), "bq-other.md"), "w") as fh:
+                fh.write("someone else's note\n")
+            out = self._run_show(tmp)
+            self.assertIn("no handoff for bq-main", out)
+            self.assertIn("bq-other.md", out)
+            # Listing is not adopting: the other note's body must not appear.
+            self.assertNotIn("someone else's note", out)
+
+    def test_a_note_without_a_trailer_says_so(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _init_repo(tmp)
+            _commit(tmp, "a.txt")
+            os.makedirs(handoff.handoff_dir(tmp))
+            with open(handoff.handoff_path("main", tmp), "w") as fh:
+                fh.write("# handoff\n\nprose only.\n")
+            out = self._run_show(tmp)
+            self.assertIn("prose only.", out)
+            self.assertIn("no checkpoint yet", out)
+
+
+class IgnoreTests(unittest.TestCase):
+    def test_local_handoff_is_git_ignored(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        result = handoff._git(["check-ignore", "-q", ".local/handoff"], cwd=root)
+        self.assertEqual(result.returncode, 0, ".local/handoff must be git-ignored")
+
+
 if __name__ == "__main__":
     unittest.main()

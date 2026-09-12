@@ -154,6 +154,137 @@ def cmd_checkpoint(argv):
     return 0
 
 
+def last_trailer(text):
+    """The last line that starts with the trailer prefix, or None.
+
+    Anchored at line start on purpose: prose that merely mentions the word
+    checkpoint is not a trailer.
+    """
+    found = None
+    for line in text.splitlines():
+        if line.startswith(TRAILER_PREFIX):
+            found = line
+    return found
+
+
+def parse_trailer(line):
+    body = line[len(TRAILER_PREFIX):]
+    if body.endswith("-->"):
+        body = body[:-3]
+    fields = {}
+    for token in body.split():
+        if "=" in token:
+            name, value = token.split("=", 1)
+            fields[name] = value
+    return fields
+
+
+def is_commit(oid, cwd=None):
+    # ^{commit} matters: an oid can name a tree or a blob.
+    return _git(["rev-parse", "--verify", "--quiet", oid + "^{commit}"], cwd=cwd).returncode == 0
+
+
+def _is_ancestor(older, newer, cwd=None):
+    return _git(["merge-base", "--is-ancestor", older, newer], cwd=cwd).returncode == 0
+
+
+def _count_between(older, newer, cwd=None):
+    result = _git(["rev-list", "--count", "%s..%s" % (older, newer)], cwd=cwd)
+    return result.stdout.strip() or "0"
+
+
+def compare(oid, head, cwd=None):
+    """One factual line. The agent decides what it means."""
+    if not is_commit(oid, cwd=cwd):
+        return "checkpoint commit %s is missing from this repo" % oid
+    if oid == head:
+        return "checkpoint is current (%s)" % oid
+    if _is_ancestor(oid, head, cwd=cwd):
+        return "%s commits landed since the checkpoint" % _count_between(oid, head, cwd=cwd)
+    if _is_ancestor(head, oid, cwd=cwd):
+        return "the checkout is behind the checkpoint by %s commits" % _count_between(
+            head, oid, cwd=cwd
+        )
+    return (
+        "history diverged since the checkpoint — a rebase or amend looks like "
+        "this too, check before trusting the note"
+    )
+
+
+def _describe_counts(dirty, untracked):
+    if dirty == 0 and untracked == 0:
+        return "clean"
+    parts = []
+    if dirty:
+        parts.append("%d modified" % dirty)
+    if untracked:
+        parts.append("%d untracked" % untracked)
+    return ", ".join(parts)
+
+
+def dirty_line(was_dirty, was_untracked, now_dirty, now_untracked):
+    """Reported alongside the commit state, never folded into it."""
+    if (was_dirty, was_untracked) == (now_dirty, now_untracked):
+        return ""
+    return "tree was %s, now %s" % (
+        _describe_counts(was_dirty, was_untracked),
+        _describe_counts(now_dirty, now_untracked),
+    )
+
+
+def _other_handoffs(worktree, current):
+    directory = handoff_dir(worktree)
+    if not os.path.isdir(directory):
+        return []
+    return sorted(
+        name for name in os.listdir(directory)
+        if name.endswith(".md") and name != os.path.basename(current)
+    )
+
+
+def cmd_show(argv):
+    resolved = _resolve()
+    if resolved is None:
+        sys.stderr.write("ERROR: not inside a git work tree\n")
+        return 1
+    branch, worktree, path = resolved
+    key = workspace_key(branch, worktree)
+
+    if not os.path.exists(path):
+        print("no handoff for %s" % key)
+        others = _other_handoffs(worktree, path)
+        if others:
+            # List, never adopt. A rename leaves an orphan and guessing which
+            # orphan belongs to this work is not the helper's call.
+            print("other handoffs present: %s" % ", ".join(others))
+        return 0
+
+    with open(path) as fh:
+        body = fh.read()
+    sys.stdout.write(body)
+    if not body.endswith("\n"):
+        print()
+
+    trailer = last_trailer(body)
+    if trailer is None:
+        print("handoff has no checkpoint yet")
+        return 0
+
+    fields = parse_trailer(trailer)
+    head = head_oid()
+    print(compare(fields.get("HEAD", ""), head))
+    now_dirty, now_untracked = tree_counts()
+    changed = dirty_line(
+        int(fields.get("dirty", 0)),
+        int(fields.get("untracked", 0)),
+        now_dirty,
+        now_untracked,
+    )
+    if changed:
+        print(changed)
+    return 0
+
+
 def cmd_path(argv):
     resolved = _resolve()
     if resolved is None:
@@ -174,6 +305,8 @@ def main(argv):
         return cmd_path(argv)
     if verb == "checkpoint":
         return cmd_checkpoint(argv)
+    if verb == "show":
+        return cmd_show(argv)
     sys.stderr.write("ERROR: unknown verb %r\n" % verb)
     return 2
 
