@@ -1,27 +1,38 @@
 # Harness-portable handoff — design
 
-**Date:** 2026-09-10. Rewritten 2026-09-11 after a Codex review rejected revision 1.
+**Date:** 2026-09-10. Revision 3, 2026-09-12.
 **Status:** approved design, pre-implementation
 **Prerequisite:** PR #10 (Codex support + `AGENTS.md` canonical). Land it first.
-**Files touched:** `AGENTS.md`, `hooks/session-start.sh`, `skills/worktree/SKILL.md`,
-`skills/standup/SKILL.md`, `skills/cleanup/SKILL.md`, new `skills/test_handoff.sh`
+**Files touched:** new `dev-workflow/handoff.py`, new `dev-workflow/test_handoff.py`,
+`AGENTS.md`, `hooks/session-start.sh`, `skills/worktree/SKILL.md`,
+`skills/standup/SKILL.md`, `skills/cleanup/SKILL.md`,
+`dev-process/scripts/worktree-reset.sh`
 
 ## Summary
 
 Let a developer stop work in one AI agent and continue it in another on the same
 machine. The trigger is a session limit or a token limit.
 
-The design adds one append-only file per workspace. The file records the intent,
-the decisions, the next steps and the blockers. Git, the tracker and — in one
-direction — Codex's own `/import` already carry everything else.
+One small Python helper owns an append-only file per workspace. The file records
+the intent, the decisions, the next steps and the blockers. Git, the tracker and
+— in one direction — Codex's own `/import` already carry everything else.
 
-## Why revision 1 was rejected
+## Revision history
 
-A Codex review found two false premises and nine design flaws. Revision 1 claimed
-Codex fires no SessionStart hook, and it did not know that Codex ships an
-`/import` command. Both claims were tested on 2026-09-11 and both were wrong. The
-nine design flaws are listed in "What changed" at the end of this document, each
-against the fix.
+Revision 1 was rejected: two false premises and nine design flaws. Revision 2 was
+rejected: six of its fixes were incomplete or wrong, and it added four new
+defects. Both rejections came from a Codex review, and every finding was verified
+by hand before being accepted.
+
+**The root cause of revision 2's failure was structural, not detail.** It
+specified the file format in prose and expected four separate surfaces — the
+`AGENTS.md` rule, `/worktree`, `/cleanup` and `/standup` — each to implement
+identical key encoding, id generation, escaping and parsing from English. They
+would drift. Four of the six findings were symptoms of that single choice.
+
+Revision 3 therefore puts one tested helper in charge of the format, and the
+skills call it. This matches what the repo already does with `dw-config.py`,
+`dw-board.py` and `validate.py`. The full finding-to-fix table is at the end.
 
 ## Verified facts
 
@@ -29,30 +40,33 @@ Tested on Claude Code 2.1.263 and Codex CLI 0.151.0.
 
 | Fact | Evidence |
 |---|---|
-| Codex DOES fire the plugin's SessionStart hook | `codex exec` in `pubx-app` printed `hook: SessionStart Completed` and the brief. |
-| The hook fires only when `dev-workflow.yml` sits in the session's CWD | `hooks/session-start.sh:12` exits otherwise. |
-| Codex `/import` pulls Claude Code **sessions**, not just config | A real run imported 195 items: 96 skills, 48 chat sessions, 42 commands, 6 plugins, 2 MCP servers, 1 AGENTS.md. |
-| An imported session becomes a resumable Codex thread | The ledger maps `…/99968417-….jsonl` → thread `01a0905e-5613-7cf2-955a-acb8b3d108e3`, `cwd` preserved. |
-| `claude import codex` carries **config only**, never sessions | `claude import codex --dry-run`: 1 mappable item, 6 unmapped. No session type exists. |
+| Codex fires the plugin's SessionStart hook | `codex exec` in `pubx-app` printed `hook: SessionStart Completed` and the brief. |
+| The hook exits silently unless `dev-workflow.yml` is in the session's CWD | `hooks/session-start.sh:12`. |
+| Codex `/import` pulls Claude Code sessions, not only config | A run imported 48 chat sessions alongside skills, commands, plugins and MCP config. |
+| An imported session becomes a Codex thread with `cwd` preserved | The ledger maps `…/99968417-….jsonl` → thread `01a0905e-5613-7cf2-955a-acb8b3d108e3`. |
+| `claude import codex` carries config only | `claude import codex --dry-run`: 1 mappable item, 6 unmapped, no session type. |
 | `CLAUDE_PLUGIN_ROOT` is set only during skill execution | Unset in a plain Claude shell; a skill preamble resolved it to the plugin root. |
 | Codex exports no plugin-root variable to a skill's shell | `env` under `env -i` shows `CODEX_*` only. |
-| `.local/` is git-ignored | `.gitignore:6`. |
-| `.local` is a symlink SHARED across worktree slots when the manifest includes it | `dev-process/scripts/worktree-reset.sh:104`. Conditional, not guaranteed: linking is skipped when the canonical source is absent. |
+| `.local/` is git-ignored | `.gitignore:6`; `git check-ignore` confirms `.local/handoff`. |
+| `.local` is shared across worktree slots only when the manifest includes it | `dev-process/scripts/worktree-reset.sh:104`. Conditional, not guaranteed. |
+| `feature%2Fx` is a legal branch name | `git check-ref-format --branch 'feature%2Fx'` succeeds. This is why naive `/`→`%2F` encoding collides. |
+
+**One claim from revision 2 is withdrawn.** It asserted that re-running `/import`
+would re-import everything. The ledger stores `content_sha256` per source, which
+suggests deduplication. The behaviour is untested, so this design makes no claim
+about it.
 
 ## The asymmetry that shapes this design
 
 | Direction | Native support |
 |---|---|
-| Claude Code → Codex | **Full.** `/import` carries the transcript into a resumable thread. |
+| Claude Code → Codex | **Full.** `/import` carries the transcript into a Codex thread. |
 | Codex → Claude Code | **None.** Config only. |
 
-`/import` is nonetheless the wrong tool for a per-switch handoff. It is a bulk,
-one-time migration: it imported all 48 sessions across 9 repos, plus 96 skills and
-42 slash commands, from a TUI picker. Running it at each limit would re-import
-everything and churn config.
-
-So this design does not try to move conversation. It moves the small durable part,
-the same way in both directions, and points at `/import` as an optional bulk tool.
+`/import` is still the wrong tool for a per-switch handoff: it is a bulk TUI
+migration that pulled 48 sessions across 9 repos in one run. So this design does
+not move conversation. It moves the small durable part, identically in both
+directions, and points at `/import` as an optional bulk tool.
 
 ## Goal
 
@@ -61,77 +75,121 @@ the same checkout**, and learns where the work stands without retyping it.
 
 ## Non-goals
 
-- **No conversation replay.** `/import` does this better one way; nothing does it
-  the other way.
-- **No transcript parsing.** Two vendor-specific readers would break on schema
-  changes.
-- **No support beyond Claude Code and Codex.** The file is plain Markdown, so
-  another agent can read it. The project does not test that.
-- **No tracker traffic.** The handoff stays local.
-- **No cross-machine support.** The file is git-ignored and local. A developer who
-  changes machine falls back on git and the board. This is a deliberate narrowing,
-  and it is why the goal says "same machine".
+- No conversation replay, and no transcript parsing.
+- No support beyond Claude Code and Codex. The file is plain Markdown, so other
+  agents can read it; the project does not test that.
+- No tracker traffic.
+- No cross-machine support. The file is git-ignored and local. This is a
+  deliberate scope cut, and it is why the goal says "same machine".
 
-## What the handoff records
+## Component 1 — `dev-workflow/handoff.py`
 
-Only what git and the tracker cannot answer: intent, decisions with reasons, next
-steps, blockers, open questions, and whether the tree was clean at each
-checkpoint.
+One helper owns the format. Nothing else parses or writes the file.
 
-It does not record the commits or the diff. `git log` answers those without help.
-This is why the design needs no `post-commit` hook — and a hook would need
-`core.hooksPath`, which overrides every other hook in a target repo.
+**Why a helper and not prose:** key encoding, id generation and staleness
+classification each have a correct answer and several plausible wrong ones. Four
+prose surfaces produced four chances to get each wrong. One helper with one test
+file produces one chance, and a test that pins it.
 
-## The file
+It follows the conventions of its neighbours: standard library only, runs under
+`uv run` or `python3`, `python3 -m py_compile` clean, and a `test_handoff.py`
+beside it.
+
+### Verbs
+
+| Verb | Does |
+|---|---|
+| `key` | Print the workspace key for the current worktree |
+| `path` | Print the handoff file path |
+| `init` | Create the file with its header, atomically; no-op if it exists |
+| `append <kind> <text>` | Append one entry, generating its id |
+| `checkpoint` | Compute HEAD, dirty and untracked counts itself, and append them |
+| `resolve <id> [text]` | Append a `resolve` entry naming an earlier id |
+| `status` | Parse, classify staleness, list open items |
+| `list` | List every handoff with workspace, ticket and last entry time |
+| `archive` | Move the file to the archive directory |
+
+A caller never formats a line itself. `checkpoint` reads git directly rather than
+accepting values, so no caller can record a stale or wrong SHA.
+
+### The workspace key
+
+**On a branch:** `urllib.parse.quote(branch, safe="")`.
+
+This percent-encodes **every** unsafe byte, including `%` itself. That is what
+makes it injective, and it is precisely what revision 2 got wrong: encoding `/`
+to `%2F` while leaving `%` alone collides `feature/x` with the legal branch name
+`feature%2Fx`. Encoding `%` first, or encoding every byte, both fix it; `quote`
+does the latter and is standard library.
+
+**Detached HEAD:** `detached..<quoted basename>..<first 8 hex of sha256 of the
+absolute worktree path>`.
+
+The `..` separator is illegal in a git ref name, so no branch can encode into the
+detached namespace. Verified: `git check-ref-format --branch 'detached..slot'`
+fails.
+
+**That protection comes from git's ref rules alone, not from the encoding.**
+`quote` does not percent-encode `.`, so `quote("detached..slot", safe="")` returns
+`detached..slot` unchanged. An implementer who swaps the separator for something
+`quote` also leaves alone, or who stops relying on git's rule, reopens the
+collision.
+
+The path hash is what makes the key unique: revision 2 used the basename alone,
+so `/a/slot` and `/b/slot` collided. The basename is kept ahead of the hash for
+human readability.
+
+### Entry ids
+
+**8 random hex characters**, from `secrets.token_hex(4)`.
+
+Revision 2 used sequential `e<n>` ids, then admitted two writers could pick the
+same one and proposed resolving to the earliest match — which left the later
+duplicate permanently unresolvable. Random ids remove the coordination problem
+instead of managing it, and need no lock.
+
+### Writing
+
+`init` uses `O_CREAT | O_EXCL`, so two agents racing to create the same file
+cannot both write a header; the loser sees the winner's file and proceeds.
+
+Every entry is written with a single `write()` of one complete logical entry,
+continuation lines included, opened in append mode. A short append is atomic on
+POSIX, so concurrent appends interleave cleanly and no entry is lost or torn.
+
+## Component 2 — the file
 
 **Path:** `.local/handoff/<key>.md`
 
-**`<key>` is derived from the workspace, and the derivation is injective:**
-
-- On a branch: the branch name with `/` replaced by `%2F`. `feature/a-b` gives
-  `feature%2Fa-b`; `feature-a/b` gives `feature-a%2Fb`. Different branches always
-  give different keys, which a naive slash-to-dash slug does not.
-- Detached HEAD: `detached..<basename of the worktree directory>`. Worktree
-  bootstrap creates detached slots deliberately
-  (`skills/worktree/SKILL.md:129`), and the directory is stable while the SHA is
-  not. The separator is `..` because git forbids it in a ref name, so no real
-  branch can ever encode to a detached key. A single character such as `/` would
-  not be safe here: a branch genuinely named `detached/slot-a` would collide.
-
-**The file is append-only. Nothing in it is ever rewritten.** The header is
-written once at creation and holds only immutable facts. Mutable state — HEAD,
-dirty count — arrives as `checkpoint` entries, so there is no header to rewrite,
-no truncate-and-rewrite window, and no lock. A POSIX append of a short line is
-atomic, so two sessions appending cannot lose each other's entries.
+**Append-only. Nothing is ever rewritten.** The header is written once and holds
+only immutable facts. Mutable state lives in `checkpoint` entries, so there is no
+header to rewrite and no lock to take.
 
 ```
 # handoff
-workspace: feature/codex-harness-support
+key: feature%2Fcodex-harness-support
+branch: feature/codex-harness-support
 base: dev
 ticket: PXT-123
 worktree: /Users/rajverma/repos/aws/dev-workflow
-created: 2026-09-11T09:14Z
+created: 2026-09-12T09:14Z
 
-[e1 2026-09-11T09:14Z] intent: make the plugin run on Codex without a second manifest
-[e2 2026-09-11T14:22Z] decision: no .codex-plugin — Codex reads .claude-plugin already,
-  and a second manifest adds 5 version-coupling points
-[e3 2026-09-11T14:40Z] next: fold the AGENTS.md warning into /setup
-[e4 2026-09-11T15:01Z] blocked: rajpubx has pull-only on singlas/dev-workflow
-[e5 2026-09-11T15:20Z] checkpoint: HEAD=d3b017e dirty=0 untracked=0
-[e6 2026-09-11T16:05Z] resolve: e3 — done in a7a6dd8
+[a3f9c1d2 2026-09-12T09:14Z] intent: make the plugin run on Codex without a second manifest
+[7b2e4f60 2026-09-12T14:22Z] decision: no .codex-plugin — Codex reads .claude-plugin
+  already, and a second manifest adds 5 version-coupling points
+[c81d05aa 2026-09-12T14:40Z] next: fold the AGENTS.md warning into /setup
+[1f6a93bc 2026-09-12T15:20Z] checkpoint: HEAD=d3b017e4f1a9c2b8e5d7061a3f4c9b2e8d05c6a1 dirty=0 untracked=0
+[9e04b7d3 2026-09-12T16:05Z] resolve: c81d05aa — done in a7a6dd8
 ```
 
-**Entry ids** are `e<n>`. A writer reads the highest existing id and adds one.
+The header carries **both** `key` and `branch`. `key` is what staleness compares;
+`branch` is for humans. Revision 2 stored only the raw branch and compared it
+against the encoded key, so every branch containing a slash read as foreign.
 
-Two writers appending in the same instant can therefore pick the same id. The
-append itself is still safe — no entry is lost — but a `resolve` naming a
-duplicated id is ambiguous. The reader resolves that by taking the **earliest**
-entry with the named id, and by reporting the duplicate so a human can see it.
-Ids are a reference aid, not a uniqueness guarantee, and the design does not add
-a lock to make them one: two agents writing the same workspace in the same minute
-is not the case this serves.
+`checkpoint` records the **full 40-character OID**, not an abbreviation, so
+verification cannot be ambiguous.
 
-**Entry kinds — these eight, and no others:**
+### Entry kinds — these eight, and no others
 
 | Kind | Meaning | Closable |
 |---|---|---|
@@ -141,151 +199,182 @@ is not the case this serves.
 | `blocked` | Something preventing progress | yes |
 | `question` | Unresolved, needs an answer | yes |
 | `note` | Anything else worth carrying | no |
-| `checkpoint` | `HEAD=<sha> dirty=<n> untracked=<n>` — the mutable state the header deliberately does not hold | no |
-| `resolve` | References an earlier entry id and closes it | n/a |
+| `checkpoint` | `HEAD=<oid> dirty=<n> untracked=<n>` | no |
+| `resolve` | Names an earlier id and closes it | n/a |
 
-**Open state is derivable.** A `next`, `blocked` or `question` is OPEN unless a
-later `resolve` names its id. This is what makes an append-only file usable: a
-reader lists the open items without needing to rewrite history. Revision 1 had no
-`resolve`, so a reader could not tell a finished step from a pending one.
+**Open state is derivable.** A `next`, `blocked` or `question` is open unless a
+later `resolve` names its id. This is what makes an append-only file usable.
 
-**Timestamps** use ISO 8601 in UTC, to the minute.
+## Component 3 — staleness
 
-**The first writer creates the file**, header included. `/worktree` is the usual
-creator, but a session that starts on an existing branch without `/worktree` must
-create it rather than skip the checkpoint.
-
-## Who writes
-
-1. **The agent, at each decision point and before it stops.** `AGENTS.md` carries
-   the rule, so every harness that reads its instruction file applies it.
-2. **`/worktree`**, when it mints a branch: write the header and an `intent`.
-3. **`/cleanup`**, when it opens the PR: append a `note` and a final `checkpoint`.
-   It does **not** archive — see below.
-
-## Who reads
-
-Three paths. Each states its own condition; none is claimed to be universal.
-
-| Path | Harness | Fires when |
-|---|---|---|
-| The `AGENTS.md` rule | both | the repo has an `AGENTS.md` and the agent reads it at session start |
-| `hooks/session-start.sh` | both | `dev-workflow.yml` is in the session's CWD |
-| `/standup` | both | the developer runs it |
-
-Revision 1 claimed one of these always fires. That was false: the hook is
-CWD-conditional and `/standup` is manual. The honest statement is that the first
-two are automatic under stated conditions, and `/standup` is the fallback a
-developer can always reach for.
-
-## Staleness
-
-The reader compares the newest `checkpoint` entry against the working tree, and
-reports one state. Prose freshness — how old the last entry is — is reported
-separately from commit ancestry, because they answer different questions.
+`status` reports one state. It verifies commits with
+`git rev-parse --verify <oid>^{commit}` — the `^{commit}` matters, since an OID
+can name a tree or a blob.
 
 | State | Test |
 |---|---|
-| `foreign` | The header's `workspace` does not match the current key. Do not use it. |
-| `invalid` | The recorded HEAD is not a commit in this repo (garbage-collected, or a bad record). |
-| `current` | The recorded HEAD equals the current HEAD. |
-| `behind` | The recorded HEAD is an ancestor of HEAD. Report the commit count. |
-| `diverged` | The recorded HEAD is a valid commit but not an ancestor. |
+| `foreign` | The header's `key` does not match the current key |
+| `malformed` | The header or an entry does not parse |
+| `no-checkpoint` | The file has no `checkpoint` entry yet |
+| `invalid` | The recorded OID does not resolve to a commit here |
+| `current` | The recorded OID equals the current HEAD |
+| `behind` | The recorded OID is an ancestor of HEAD; report the count |
+| `ahead-of-checkpoint` | The current HEAD is an ancestor of the recorded OID — the checkout moved backwards |
+| `diverged` | Both are commits, neither is an ancestor of the other |
 
-Use `git cat-file -e` for `invalid` and `git merge-base --is-ancestor` for the
-rest.
+`ahead-of-checkpoint` is new in revision 3, on the reviewer's suggestion. It is
+cheap and it distinguishes "you checked out something older" from real
+divergence.
 
-**A `diverged` result does not prove the handoff is stale.** A rebase or an amend
-rewrites history and produces exactly this reading for an otherwise perfectly
-relevant handoff. The design does not try to distinguish them — patch-id matching
-is fragile and expensive. The reader must say so in those words, so a developer
-checks rather than discards.
+**Dirty state is reported alongside, never folded into, the commit state.** The
+recorded counts are compared with the current ones, so `current` with
+`dirty 0 → 7` still tells the developer the tree moved. Revision 2 recorded the
+counts but never compared them.
 
-**Dirty state is reported too.** Each `checkpoint` records the count of modified
-tracked files and untracked files. A clean HEAD match with `dirty=7` means the
-tree moved even though the commit did not. Revision 1 claimed a developer "never
-loses work, because work is committed"; `/cleanup` exists precisely because work
-sits uncommitted, so the handoff records that instead of assuming it away.
+**`diverged` deliberately does not distinguish a rebase from real divergence.** A
+rebase or amend produces exactly this reading for an otherwise relevant handoff.
+Patch-id matching is fragile and would manufacture false certainty. The message
+must name rebase as a likely cause and tell the developer to check. The reviewer
+endorsed this.
 
-## When no handoff matches
+## Component 4 — the skills
 
-If no file matches the current key, the reader lists the other handoffs in
-`.local/handoff/` with their workspace, ticket and last entry time, and stops.
-A branch rename or a new worktree orphans the old file, and guessing which orphan
-belongs to the current work is not something the reader should do silently.
+Each calls the helper. None parses the file.
 
-## Archival
+| Surface | Calls |
+|---|---|
+| The `AGENTS.md` rule | `status` at session start; `append` at each decision point and before stopping |
+| `hooks/session-start.sh` | `status`, appended to the existing brief |
+| `/worktree` | `init` plus an `intent` when it mints a branch |
+| `/standup` | `status`, reported beside the board |
+| `/cleanup` | `checkpoint` and a `note` when it opens the PR |
+| `dev-process/scripts/worktree-reset.sh` | `archive` when it sweeps a merged branch |
 
-Archive when the **branch is gone**, not when the PR opens. A branch stays alive
-through CI failures, review changes and conflict repair, all of which need the
-handoff. `/worktree` already sweeps merged branches; it moves the matching
-handoff to `.local/handoff/archive/<key>-<YYYY-MM-DD>.md` in the same pass.
+Resolving the helper's path uses the four-rung ladder PR #10 establishes:
+`dw-config` on PATH, then `$CLAUDE_PLUGIN_ROOT`, then `$DW_ROOT`, then
+checkout-relative.
 
-## Relationship to `/import`
+### Read paths and their conditions
 
-`AGENTS.md` and the README should tell a developer moving **Claude → Codex** that
-`codex` `/import` exists and carries the actual conversation, as a bulk one-time
-migration. It is complementary, never required, and there is no equivalent going
-the other way.
+None is universal, and the design does not claim one is.
+
+| Path | Fires when |
+|---|---|
+| The `AGENTS.md` rule | the repo has an `AGENTS.md` that the agent reads at session start |
+| `hooks/session-start.sh` | `dev-workflow.yml` is in the session's CWD |
+| `/standup` | the developer runs it |
+
+## Component 5 — archival and orphans
+
+**Archive when the branch is gone, not when the PR opens.** A branch stays alive
+through CI failures, review and conflict repair. `worktree-reset.sh` already
+sweeps merged branches, so it calls `handoff archive` in the same pass.
+
+**Archive path:** `.local/handoff/archive/<key>-<YYYYMMDDTHHMMSSZ>.md`. Revision 2
+used a date alone, which collides when a branch name is reused twice in one day.
+
+**Orphans.** A rename or a new worktree leaves a handoff no key matches. `status`
+reports that no handoff matches and prints what `list` would show. It never
+adopts an orphan silently. Adoption is a deliberate act: the developer moves or
+copies the file, and the helper does not guess.
 
 ## Risks
 
 - **An agent can be killed between a decision and its checkpoint.** The developer
   loses reasoning since the last entry, never committed work. Not removable
   without transcript parsing, which is a non-goal.
-- **An agent can forget the rule.** It lives in `AGENTS.md`, which every session
-  reads, and the skills checkpoint at their boundaries. The risk stays above zero.
-- **`.local` is shared across slots only when the worktree manifest includes it.**
-  Where it is not shared, a handoff written in one slot is invisible in another.
-  The per-key file naming means this degrades to "not found", never to a wrong
-  file being read.
+- **An agent can forget to append.** The rule lives in `AGENTS.md` and the skills
+  checkpoint at their boundaries. The risk stays above zero. This design reduces
+  it; it does not eliminate it.
+- **`.local` is shared across slots only when the manifest includes it.** Where it
+  is not, a handoff written in one slot is invisible in another. Per-key naming
+  means this degrades to "not found", never to reading the wrong file.
 
 ## Test plan
 
-New `skills/test_handoff.sh`, in the repo idiom (`bash <file>`, exit 0 on pass):
+`dev-workflow/test_handoff.py`, run as `python3 dev-workflow/test_handoff.py`,
+matching `test_validate.py`.
 
-1. `feature/a-b` and `feature-a/b` produce different keys.
-2. A detached HEAD produces a key from the worktree directory, and a branch
-   literally named `detached/<x>` does not collide with it.
-3. An append preserves every earlier entry.
-4. `resolve` closes the referenced entry, and an unreferenced `next` stays open.
-5. Entry ids increment. Two writers picking the same id is tolerated: the reader
-   resolves to the earliest entry with that id and reports the duplicate.
-6. A header whose `workspace` differs reads as `foreign`.
-7. A recorded HEAD that is not a commit reads as `invalid`.
-8. An ancestor reads as `behind` with the correct count.
-9. A non-ancestor reads as `diverged`, and the message names rebase as a cause.
-10. A dirty tree is reported even when HEAD matches.
-11. No matching key lists the other handoffs instead of guessing.
-12. `.local/handoff/` is git-ignored — `git check-ignore` confirms it.
-13. `AGENTS.md` carries the handoff rule.
+**Keys**
+
+1. `feature/x` and the legal branch `feature%2Fx` produce different keys.
+2. Round-tripping a key recovers the branch name exactly.
+3. Two detached worktrees sharing a basename (`/a/slot`, `/b/slot`) produce
+   different keys.
+4. No branch name can produce a key in the `detached..` namespace.
+
+**Entries**
+
+5. An append preserves every earlier entry.
+6. Ids are unique across many appends.
+7. `resolve` closes the named entry; an unreferenced `next` stays open.
+8. A multi-line entry round-trips, and its continuation lines are not parsed as
+   separate entries.
+9. Two concurrent appends both land, and neither is torn.
+10. Two concurrent `init` calls produce one header, not two.
+
+**Staleness**
+
+11. A mismatched key reads `foreign`.
+12. A file with no checkpoint reads `no-checkpoint`.
+13. A corrupt header reads `malformed`.
+14. An OID that is not a commit reads `invalid`, including an OID that names a
+    tree.
+15. An ancestor reads `behind` with the correct count.
+16. A reversed relationship reads `ahead-of-checkpoint`.
+17. Unrelated commits read `diverged`, and the message names rebase as a cause.
+18. A dirty tree is reported even when HEAD matches.
+
+**Files**
+
+19. No matching key lists the other handoffs instead of guessing.
+20. Two archives of the same key on the same day do not collide.
+21. `.local/handoff/` is git-ignored.
+22. `AGENTS.md` carries the handoff rule.
 
 Each assertion must be shown to fail against the defect it targets. An assertion
 that has not been seen failing is not verified.
 
 **Two manual checks no script can make:**
 
-- Write a handoff in Claude Code, switch to `codex` in the same checkout, and
-  confirm the Codex session reports the work state without the developer
-  repeating it. Then the reverse — the direction with no native support, and the
-  one this design exists for.
-- Confirm the same flow in a repo where `.local` is **not** shared across slots,
-  and confirm it degrades to "not found" rather than reading the wrong file.
+- Write a handoff in Claude Code, switch to Codex in the same checkout, and
+  confirm it reports the work state without the developer repeating it. Then the
+  reverse — the direction with no native support, and the reason this exists.
+- Repeat where `.local` is **not** shared across slots, and confirm it degrades to
+  "not found" rather than reading the wrong file.
 
-## What changed from revision 1
+## Finding-to-fix table
 
-| Review finding | Fix |
+**From the revision 1 review — two false premises and nine design flaws, eleven rows:**
+
+| Finding | Fix |
 |---|---|
-| Codex does fire the hook | Premise corrected; the hook is now a read path on both harnesses, with its CWD condition stated |
-| `/import` exists and carries sessions | Documented as a complementary bulk tool; the asymmetry now drives the design |
-| Slash-to-dash slug is not injective | `%2F` encoding, which is reversible |
-| Detached HEAD has no path | Key from the worktree directory |
-| Header rewrite is neither append-only nor crash-safe | The header is immutable; HEAD and dirty state moved into `checkpoint` entries |
+| Codex does fire the hook | Premise corrected; it is a read path on both harnesses |
+| `/import` exists and carries sessions | Documented; the asymmetry now drives the design |
+| Slash-to-dash slug not injective | Full percent-encoding via `quote(safe="")` |
+| Detached HEAD has no path | Key from the worktree, with a path hash |
+| Header rewrite is not crash-safe | Header immutable; state moved to `checkpoint` entries |
 | Archiving at PR-open is premature | Archive when the branch is swept |
-| `intent` promised but not an entry kind | `intent` is now a kind |
-| Append-only entries can never be resolved | `resolve` entries close earlier ids; open state is derivable |
-| "At least one path always fires" is false | Each path now states its condition; no universality claimed |
+| `intent` promised but not a kind | `intent` is a kind |
+| Append-only entries can never be resolved | `resolve` closes ids |
+| "At least one path always fires" is false | Each path states its condition |
 | "Work is always committed" is false | `checkpoint` records dirty and untracked counts |
-| Rebase reads as diverged with no recovery rule | `diverged` explicitly names rebase as a cause and tells the reader to check |
-| Branch rename orphans the file | The reader lists orphans instead of guessing |
-| Cross-machine loss called fatal | The goal is explicitly narrowed to same machine, same checkout |
+| Rename orphans the file | `status` lists orphans, never adopts one |
+
+**From the revision 2 review — six incomplete fixes and four new defects, thirteen rows:**
+
+| Finding | Fix |
+|---|---|
+| `%2F` alone is not injective — `feature%2Fx` is a legal branch | `quote(safe="")` encodes `%` too |
+| Detached basename is not unique | Add a hash of the absolute worktree path |
+| Sequential ids break `resolve` under concurrency | 8 random hex characters |
+| Header stored a raw branch, staleness compared an encoded key | Header stores both `key` and `branch`; comparison uses `key` |
+| Concurrent first creation, and partial headers | `O_CREAT|O_EXCL`; one `write()` per entry |
+| Archive sweep lives in `worktree-reset.sh`, which was out of scope | Added to the files touched |
+| Dirty state recorded but never compared | `status` compares recorded with current |
+| Staleness missing several states, and used short SHAs | Adds `malformed`, `no-checkpoint`, `ahead-of-checkpoint`; verifies `^{commit}`; stores full OIDs |
+| Archive filenames collide on same-day reuse | Timestamp to the second |
+| No shared writer or parser | `dev-workflow/handoff.py` — the structural fix |
+| Test plan gaps | 22 assertions, including every collision case named above |
+| "Nine flaws" miscounted against eleven rows | Both tables are now explicitly counted |
+| `/import` re-import claim unsupported | Withdrawn |
