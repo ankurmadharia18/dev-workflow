@@ -16,6 +16,7 @@ from urllib.parse import quote
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import handoff  # noqa: E402
+import tempfile  # noqa: E402
 
 
 class KeyTests(unittest.TestCase):
@@ -60,6 +61,79 @@ class KeyTests(unittest.TestCase):
     def test_path_is_under_local_handoff(self):
         p = handoff.handoff_path("main", "/repo")
         self.assertEqual(p, os.path.join("/repo", ".local", "handoff", "bq-main.md"))
+
+
+def _init_repo(path):
+    """A real git repo — ancestry tests need real commits."""
+    handoff._git(["init", "--quiet", "-b", "main", path])
+    handoff._git(["config", "user.email", "t@example.com"], cwd=path)
+    handoff._git(["config", "user.name", "T"], cwd=path)
+    return path
+
+
+def _commit(path, name):
+    with open(os.path.join(path, name), "w") as fh:
+        fh.write(name)
+    handoff._git(["add", "-A"], cwd=path)
+    handoff._git(["commit", "--quiet", "-m", name], cwd=path)
+    return handoff._git(["rev-parse", "HEAD"], cwd=path).stdout.strip()
+
+
+class TrailerTests(unittest.TestCase):
+    def test_trailer_is_an_html_comment_with_a_full_oid(self):
+        oid = "d" * 40
+        line = handoff.make_trailer(oid, 3, 2, "2026-09-12T15:20Z")
+        self.assertTrue(line.startswith(handoff.TRAILER_PREFIX))
+        self.assertIn("HEAD=" + oid, line)
+        self.assertIn("dirty=3", line)
+        self.assertIn("untracked=2", line)
+        self.assertTrue(line.endswith("-->"))
+
+    def test_append_preserves_existing_prose(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "note.md")
+            with open(path, "w") as fh:
+                fh.write("# note\n\nsome prose\n")
+            handoff.append_line(path, "APPENDED")
+            with open(path) as fh:
+                body = fh.read()
+            self.assertIn("some prose", body)
+            self.assertTrue(body.endswith("APPENDED\n"))
+
+    def test_append_adds_a_newline_when_the_file_lacks_one(self):
+        # Without this, the trailer welds onto the last sentence and the
+        # "^<!-- dw-checkpoint " anchor never matches it again.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "note.md")
+            with open(path, "w") as fh:
+                fh.write("no trailing newline")
+            handoff.append_line(path, "TRAILER")
+            with open(path) as fh:
+                lines = fh.read().splitlines()
+            self.assertEqual(lines[-1], "TRAILER")
+            self.assertEqual(lines[-2], "no trailing newline")
+
+    def test_append_does_not_double_the_newline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "note.md")
+            with open(path, "w") as fh:
+                fh.write("ends with newline\n")
+            handoff.append_line(path, "TRAILER")
+            with open(path) as fh:
+                body = fh.read()
+            self.assertNotIn("\n\nTRAILER", body)
+
+    def test_tree_counts_separates_dirty_from_untracked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _init_repo(tmp)
+            _commit(tmp, "tracked.txt")
+            with open(os.path.join(tmp, "tracked.txt"), "w") as fh:
+                fh.write("changed")
+            with open(os.path.join(tmp, "new.txt"), "w") as fh:
+                fh.write("new")
+            dirty, untracked = handoff.tree_counts(tmp)
+            self.assertEqual(dirty, 1)
+            self.assertEqual(untracked, 1)
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ holding the git state an agent cannot reliably self-report.
 Standard library only, on purpose: this runs from a plugin cache where no
 dependency is guaranteed.
 """
+import datetime
 import hashlib
 import os
 import subprocess
@@ -85,6 +86,74 @@ def _resolve(cwd=None):
     return branch, worktree, handoff_path(branch, worktree)
 
 
+TRAILER_PREFIX = "<!-- dw-checkpoint "
+
+
+def make_trailer(oid, dirty, untracked, when):
+    return "%sHEAD=%s dirty=%d untracked=%d at=%s -->" % (
+        TRAILER_PREFIX,
+        oid,
+        dirty,
+        untracked,
+        when,
+    )
+
+
+def append_line(path, text):
+    """Append one line, guaranteeing it starts on a line of its own.
+
+    An agent that writes prose without a terminal newline would otherwise
+    leave the trailer welded to the end of a sentence, where the anchored
+    match in `show` never finds it and the checkpoint silently disappears.
+    """
+    needs_newline = False
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        with open(path, "rb") as fh:
+            fh.seek(-1, os.SEEK_END)
+            needs_newline = fh.read(1) != b"\n"
+    with open(path, "a") as fh:
+        fh.write(("\n" if needs_newline else "") + text + "\n")
+
+
+def head_oid(cwd=None):
+    result = _git(["rev-parse", "HEAD"], cwd=cwd)
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def tree_counts(cwd=None):
+    """(modified tracked files, untracked files)."""
+    result = _git(["status", "--porcelain", "-uall"], cwd=cwd)
+    dirty = untracked = 0
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        if line.startswith("??"):
+            untracked += 1
+        else:
+            dirty += 1
+    return dirty, untracked
+
+
+def cmd_checkpoint(argv):
+    resolved = _resolve()
+    if resolved is None:
+        sys.stderr.write("ERROR: not inside a git work tree\n")
+        return 1
+    _, worktree, path = resolved
+    oid = head_oid()
+    if oid is None:
+        sys.stderr.write("ERROR: this repo has no commits yet\n")
+        return 1
+    dirty, untracked = tree_counts()
+    when = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+    os.makedirs(handoff_dir(worktree), exist_ok=True)
+    append_line(path, make_trailer(oid, dirty, untracked, when))
+    print(path)
+    return 0
+
+
 def cmd_path(argv):
     resolved = _resolve()
     if resolved is None:
@@ -103,6 +172,8 @@ def main(argv):
     verb = argv[1]
     if verb == "path":
         return cmd_path(argv)
+    if verb == "checkpoint":
+        return cmd_checkpoint(argv)
     sys.stderr.write("ERROR: unknown verb %r\n" % verb)
     return 2
 
