@@ -269,14 +269,41 @@ class WiringTests(unittest.TestCase):
         body = self._repo_file("AGENTS.md")
         self.assertIn("handoff.py show", body)
         self.assertIn("handoff.py checkpoint", body)
+        # The mentions above pass even if the executable lines are deleted.
+        # AGENTS.md is prose (no shell HANDOFF= assignment), so its
+        # "executable wiring" is the literal invocation lines plus the
+        # ladder-resolution paragraph that tells the reader how to fill in
+        # $HANDOFF -- assert both survive, not just the parenthetical gloss.
+        self.assertIn('    python3 "$HANDOFF" show', body)
+        self.assertIn('    python3 "$HANDOFF" checkpoint', body)
+        self.assertIn(
+            "Resolve `$HANDOFF` the way the skills resolve `dw-config.py` — try\n"
+            "`$CLAUDE_PLUGIN_ROOT/dev-workflow/handoff.py`, then\n"
+            "`$DW_ROOT/dev-workflow/handoff.py`, then `dev-workflow/handoff.py` from a\n"
+            "framework checkout.",
+            body,
+        )
 
     def test_standup_reads_the_handoff(self):
-        self.assertIn("handoff.py show", self._repo_file("skills/standup/SKILL.md"))
+        body = self._repo_file("skills/standup/SKILL.md")
+        self.assertIn("handoff.py show", body)
+        # Prove the wiring is executable, not just mentioned in prose: the
+        # ladder assignment and the actual invocation must both survive.
+        self.assertIn(
+            'HANDOFF="${CLAUDE_PLUGIN_ROOT:-${DW_ROOT:-.}}/dev-workflow/handoff.py"',
+            body,
+        )
+        self.assertIn('python3 "$HANDOFF" show', body)
 
     def test_cleanup_writes_a_checkpoint(self):
+        body = self._repo_file("skills/cleanup/SKILL.md")
+        self.assertIn("handoff.py checkpoint", body)
+        # Same executable-wiring proof as standup, for the checkpoint verb.
         self.assertIn(
-            "handoff.py checkpoint", self._repo_file("skills/cleanup/SKILL.md")
+            'HANDOFF="${CLAUDE_PLUGIN_ROOT:-${DW_ROOT:-.}}/dev-workflow/handoff.py"',
+            body,
         )
+        self.assertIn('python3 "$HANDOFF" checkpoint', body)
 
 
 if __name__ == "__main__":
