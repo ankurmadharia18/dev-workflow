@@ -4,8 +4,7 @@
 **Status:** approved design, pre-implementation
 **Prerequisite:** PR #10 (Codex support + `AGENTS.md` canonical). Land it first.
 **Files touched:** new `dev-workflow/handoff.py`, new `dev-workflow/test_handoff.py`,
-`AGENTS.md`, `hooks/session-start.sh`, `skills/standup/SKILL.md`,
-`skills/cleanup/SKILL.md`
+`AGENTS.md`, `skills/standup/SKILL.md`, `skills/cleanup/SKILL.md`
 
 ## Summary
 
@@ -54,15 +53,32 @@ the same checkout**, and learns where the work stands without retyping it.
 
 **Path:** `.local/handoff/<key>.md`, git-ignored (`.gitignore:6`).
 
-**Key:** `urllib.parse.quote(branch, safe="")` on a branch;
-`detached-<first 12 hex of sha256 of the absolute worktree path>` when detached.
+**Key:** one of three forms, each carrying a fixed prefix the helper adds:
+
+| Form | When |
+|---|---|
+| `bq-<quote(branch, safe="")>` | on a branch, and the whole key is ≤ 200 characters |
+| `bh-<full sha256 hex of the branch name>` | on a branch, when `bq-…` would exceed 200 characters |
+| `dh-<full sha256 hex of the absolute worktree path>` | detached HEAD |
 
 Per-branch, because `dev-process/scripts/worktree-reset.sh:104` shares `.local`
 across worktree slots, so one file would let parallel slots overwrite each other.
+
 `quote(safe="")` encodes every unsafe byte including `%`, which is what makes it
 injective — `feature/x` gives `feature%2Fx` and the legal branch `feature%2Fx`
-gives `feature%252Fx`. If the encoded name would exceed 200 characters, the
-helper substitutes `long-<first 12 hex of sha256 of the branch name>`.
+gives `feature%252Fx`.
+
+**The three prefixes are what keep the forms disjoint, and they are not
+optional.** An earlier draft used a bare `detached-` and `long-` prefix, which a
+branch could impersonate: someone computes the hash of a worktree path, creates a
+branch literally named `detached-<that hash>`, and both resolve to the same file.
+No cryptography is needed to do it. Because the helper prepends `bq-` to every
+branch-derived key, a branch named `dh-abc` becomes `bq-dh-abc` and cannot reach
+the `dh-` namespace. The 200-character limit applies to the **whole** key,
+prefix included.
+
+The hashes are full sha256, not truncated. Truncation buys shorter filenames and
+costs collision resistance, and nothing here needs short filenames.
 
 **Content:** free-form Markdown, written by the agent. Whatever it judges the
 next session needs — what it is doing, what it decided and why, what is next,
@@ -78,6 +94,12 @@ An HTML comment, so it stays invisible in rendered Markdown. The helper reads th
 **last** line in the file matching `^<!-- dw-checkpoint `. Prose containing that
 exact prefix at the start of a line is the only way to confuse it, which is
 acceptable for a scratch file the agent itself writes.
+
+**The trailer must begin on its own line.** An agent that appends prose without a
+terminal newline would otherwise leave the trailer welded to the end of a
+sentence, where the `^` anchor never matches it and the checkpoint silently
+disappears. `checkpoint` therefore writes a leading newline whenever the file is
+non-empty and does not already end in one.
 
 The helper records the git state because that is the one thing an agent cannot
 reliably self-report. Everything else it can simply write down.
@@ -129,11 +151,14 @@ session start. `/cleanup` runs `checkpoint` when it opens the PR.
 **Reads.** `AGENTS.md` tells the agent to run `handoff show` at session start.
 `/standup` runs it and reports beside the board.
 
-**The SessionStart hook does not call the helper.** It is dependency-free bash by
-design (`hooks/session-start.sh`), and adding a Python call would break that
-contract. It does one `[ -f ]` test and adds a single line — "a handoff note
-exists for this branch; run `handoff show`" — which costs nothing and needs no
-interpreter.
+**The SessionStart hook is not touched at all.** It is dependency-free bash by
+design (`hooks/session-start.sh:15`), so it cannot call the helper. An earlier
+draft had it do a cheap `[ -f ]` test instead — but knowing *which* file to test
+means reimplementing percent-encoding, sha256 and the detached-HEAD rule in bash,
+which is the duplication this whole revision exists to avoid. The `AGENTS.md`
+rule and `/standup` both already run `show`, so the hint bought nothing.
+
+`hooks/session-start.sh` therefore leaves the files-touched list.
 
 **Locating the helper** uses the same ladder the skills already use for
 `dw-config.py`, with `handoff.py` substituted for it: `$CLAUDE_PLUGIN_ROOT`, then
@@ -168,19 +193,23 @@ developer renaming the file, which needs no code.
 `dev-workflow/test_handoff.py`, run as `python3 dev-workflow/test_handoff.py`.
 
 1. `feature/x` and the legal branch `feature%2Fx` produce different keys, and a
-   key round-trips to its branch name.
+   `bq-` key round-trips to its branch name.
 2. Two detached worktrees sharing a basename produce different keys.
-3. A branch whose encoded name exceeds 200 characters falls back to the hashed
-   form.
-4. `checkpoint` appends without disturbing existing prose, and `show` reads the
+3. A branch whose key would exceed 200 characters falls back to `bh-`, and the
+   limit is measured on the whole key including its prefix.
+4. A branch literally named `dh-<hash>` or `bh-<hash>` cannot collide with a
+   detached or hashed key — it lands in the `bq-` namespace.
+5. `checkpoint` appends without disturbing existing prose, and `show` reads the
    **last** trailer when several exist.
-5. Each comparison line is produced by its situation: current, commits landed,
+6. `checkpoint` writes a leading newline when the file does not end in one, so
+   the trailer always starts its own line and stays matchable.
+7. Each comparison line is produced by its situation: current, commits landed,
    checkout behind, diverged, missing commit, no trailer, no file.
-6. An OID naming a tree reports as missing, not as diverged.
-7. Dirty counts are reported when the commit is unchanged.
-8. `.local/handoff/` is git-ignored.
+8. An OID naming a tree reports as missing, not as diverged.
+9. Dirty counts are reported when the commit is unchanged.
+10. `.local/handoff/` is git-ignored.
 
-Eight assertions, against revision 3's twenty-two. The drop is not a weakening —
+Ten assertions, against revision 3's twenty-two. The drop is not a weakening —
 the removed assertions tested id collisions, parser grammar and state precedence,
 none of which now exist.
 
@@ -202,3 +231,4 @@ reason this exists.
 | `append`, `init`, `list`, `archive`, `key`, `status` verbs | Three verbs remain; the agent writes prose directly |
 | `O_CREAT\|O_EXCL` creation protocol | No header to create; the first append creates the file |
 | The archive sweep in `worktree-reset.sh` | No archiving, so that file leaves the blast radius |
+| The SessionStart hook `[ -f ]` hint | Finding which file to test means reimplementing the key rules in bash |
