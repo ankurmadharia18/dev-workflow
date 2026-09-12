@@ -51,6 +51,16 @@ class KeyTests(unittest.TestCase):
         self.assertEqual(len("bq-" + quote(branch, safe="")), 201)
         self.assertTrue(handoff.workspace_key(branch, "/repo").startswith("bh-"))
 
+    def test_key_of_exactly_200_stays_bq(self):
+        # Pins the boundary itself: "> KEY_MAX" and ">= KEY_MAX" both hash a
+        # 201-character key, but only ">=" wrongly hashes a 200-character
+        # one. "z" is untouched by quote(safe=""), so 197 of them plus the
+        # 3-character "bq-" prefix land the key at exactly 200.
+        branch = "z" * 197
+        key = handoff.workspace_key(branch, "/repo")
+        self.assertEqual(len("bq-" + quote(branch, safe="")), 200)
+        self.assertTrue(key.startswith("bq-"))
+
     def test_a_branch_cannot_impersonate_a_detached_key(self):
         # Compute a real detached key, then make a branch literally named that.
         detached = handoff.workspace_key(None, "/tmp/a/slot")
@@ -135,6 +145,24 @@ class TrailerTests(unittest.TestCase):
             self.assertEqual(dirty, 1)
             self.assertEqual(untracked, 1)
 
+    def test_tree_counts_does_not_swap_dirty_and_untracked(self):
+        # Symmetric 1/1 above cannot catch a swapped return tuple. Two
+        # modified tracked files plus one untracked file pins each count to
+        # its own place.
+        with tempfile.TemporaryDirectory() as tmp:
+            _init_repo(tmp)
+            _commit(tmp, "a.txt")
+            _commit(tmp, "b.txt")
+            with open(os.path.join(tmp, "a.txt"), "w") as fh:
+                fh.write("changed a")
+            with open(os.path.join(tmp, "b.txt"), "w") as fh:
+                fh.write("changed b")
+            with open(os.path.join(tmp, "new.txt"), "w") as fh:
+                fh.write("new")
+            dirty, untracked = handoff.tree_counts(tmp)
+            self.assertEqual(dirty, 2)
+            self.assertEqual(untracked, 1)
+
 
 class ShowTests(unittest.TestCase):
     def test_last_trailer_wins(self):
@@ -155,6 +183,14 @@ class ShowTests(unittest.TestCase):
 
     def test_prose_mentioning_checkpoint_is_not_a_trailer(self):
         self.assertIsNone(handoff.last_trailer("I ran checkpoint: it worked\n"))
+
+    def test_trailer_prefix_mid_sentence_is_not_a_trailer(self):
+        # The existing "prose mentioning checkpoint" sample never contains
+        # TRAILER_PREFIX itself, so a `startswith` -> `in` regression would
+        # slip past it. This line carries the exact prefix, but not at the
+        # start of the line, so only an anchored match rejects it.
+        text = "Note: " + handoff.TRAILER_PREFIX + "HEAD=" + "a" * 40 + " -->\n"
+        self.assertIsNone(handoff.last_trailer(text))
 
     def test_compare_current(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -210,6 +246,20 @@ class ShowTests(unittest.TestCase):
     def test_dirty_line_is_quiet_when_nothing_changed(self):
         self.assertEqual(handoff.dirty_line(0, 0, 0, 0), "")
 
+    def test_describe_counts_full_string_dirty_only(self):
+        # assertIn("7", ...) alone would still pass with the modified/
+        # untracked labels swapped. Pin the exact string.
+        self.assertEqual(handoff._describe_counts(7, 0), "7 modified")
+
+    def test_describe_counts_full_string_untracked_only(self):
+        self.assertEqual(handoff._describe_counts(0, 7), "7 untracked")
+
+    def test_dirty_line_reverse_direction_tree_now_clean(self):
+        # The spec names both directions explicitly; only testing "clean ->
+        # dirty" leaves "dirty -> clean" uncovered.
+        line = handoff.dirty_line(3, 0, 0, 0)
+        self.assertEqual(line, "tree was 3 modified, now clean")
+
 
 class ShowVerbTests(unittest.TestCase):
     """The two cmd_show paths that produce no comparison line at all."""
@@ -250,6 +300,32 @@ class ShowVerbTests(unittest.TestCase):
             out = self._run_show(tmp)
             self.assertIn("prose only.", out)
             self.assertIn("no checkpoint yet", out)
+
+    def test_show_with_a_checkpoint_prints_the_exact_output_lines(self):
+        # No existing test drives cmd_show against a note WITH a checkpoint,
+        # so the field mapping (HEAD/dirty/untracked -> compare/dirty_line)
+        # rested only on manual inspection. This pins the exact lines,
+        # including the swapped-count and mid-sentence-prefix mutations.
+        with tempfile.TemporaryDirectory() as tmp:
+            _init_repo(tmp)
+            first = _commit(tmp, "a.txt")
+            os.makedirs(handoff.handoff_dir(tmp))
+            with open(handoff.handoff_path("main", tmp), "w") as fh:
+                fh.write(
+                    "# handoff\n\ndoing the thing.\n"
+                    + handoff.make_trailer(first, 3, 0, "2026-09-12T10:00Z")
+                    + "\n"
+                )
+            with open(os.path.join(tmp, "new.txt"), "w") as fh:
+                fh.write("untracked now")
+            out = self._run_show(tmp)
+            lines = out.splitlines()
+            self.assertEqual(lines[0], "# handoff")
+            self.assertEqual(lines[2], "doing the thing.")
+            self.assertEqual(lines[4], "checkpoint is current (%s)" % first)
+            # 2 untracked, not 1: this fixture (unlike the real repo) has no
+            # .gitignore, so the handoff note itself and new.txt both count.
+            self.assertEqual(lines[5], "tree was 3 modified, now 2 untracked")
 
 
 class IgnoreTests(unittest.TestCase):

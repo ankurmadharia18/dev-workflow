@@ -7,8 +7,8 @@
 
 Run it however the framework was installed:
 
-    uv run "$CLAUDE_PLUGIN_ROOT/dev-workflow/handoff.py" show   # plugin install
-    python3 dev-workflow/handoff.py show                        # framework checkout
+    python3 "$CLAUDE_PLUGIN_ROOT/dev-workflow/handoff.py" show   # plugin install
+    python3 dev-workflow/handoff.py show                         # framework checkout
 
 The note itself is free-form Markdown that the agent writes with its own tools.
 Nothing here parses the prose. The only structured element is a trailer line
@@ -28,9 +28,21 @@ KEY_MAX = 200
 
 
 def _git(args, cwd=None):
-    return subprocess.run(
-        ["git"] + args, capture_output=True, text=True, cwd=cwd
-    )
+    """Run git, turning "git is missing" into a normal non-zero result.
+
+    Callers only ever read `.returncode` and `.stdout`, never raise on this
+    call, so a plain `OSError` (its `FileNotFoundError` subclass included,
+    raised when the `git` executable itself cannot be found) is folded into
+    the same shape instead of escaping as an uncaught exception.
+    """
+    try:
+        return subprocess.run(
+            ["git"] + args, capture_output=True, text=True, cwd=cwd
+        )
+    except OSError as exc:
+        return subprocess.CompletedProcess(
+            args=["git"] + args, returncode=1, stdout="", stderr=str(exc)
+        )
 
 
 def current_branch(cwd=None):
@@ -179,6 +191,21 @@ def parse_trailer(line):
     return fields
 
 
+def _parse_field_int(value, default=0):
+    """A trailer field as an int, or `default` when it will not parse.
+
+    The trailer is hand-editable (the agent edits this file with its own
+    tools), so `dirty=lots` is plausible. Falling back to `default` rather
+    than raising keeps `show` informative instead of crashing on one bad
+    field; the missing/malformed count then reads as unchanged from now,
+    which undersells a real change but never lies in the other direction.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def is_commit(oid, cwd=None):
     # ^{commit} matters: an oid can name a tree or a blob.
     return _git(["rev-parse", "--verify", "--quiet", oid + "^{commit}"], cwd=cwd).returncode == 0
@@ -195,6 +222,11 @@ def _count_between(older, newer, cwd=None):
 
 def compare(oid, head, cwd=None):
     """One factual line. The agent decides what it means."""
+    if not oid:
+        # An empty HEAD field (a malformed trailer) reads the same as a
+        # missing commit, but without the doubled space that "commit %s is"
+        # leaves behind when %s is the empty string.
+        return "checkpoint commit is missing from this repo"
     if not is_commit(oid, cwd=cwd):
         return "checkpoint commit %s is missing from this repo" % oid
     if oid == head:
@@ -232,14 +264,31 @@ def dirty_line(was_dirty, was_untracked, now_dirty, now_untracked):
     )
 
 
+OTHER_HANDOFFS_LIMIT = 5
+
+
 def _other_handoffs(worktree, current):
+    """Up to OTHER_HANDOFFS_LIMIT other notes, newest first.
+
+    A shared `.local` (per `worktree-reset.sh`) can accumulate one note per
+    ticket a slot has ever held. Newest-first, capped, keeps the line useful
+    instead of dumping the slot's whole history at every session start.
+    """
     directory = handoff_dir(worktree)
     if not os.path.isdir(directory):
         return []
-    return sorted(
-        name for name in os.listdir(directory)
-        if name.endswith(".md") and name != os.path.basename(current)
-    )
+    current_name = os.path.basename(current)
+    candidates = []
+    for name in os.listdir(directory):
+        if not name.endswith(".md") or name == current_name:
+            continue
+        try:
+            mtime = os.path.getmtime(os.path.join(directory, name))
+        except OSError:
+            mtime = 0
+        candidates.append((mtime, name))
+    candidates.sort(key=lambda pair: pair[0], reverse=True)
+    return [name for _, name in candidates[:OTHER_HANDOFFS_LIMIT]]
 
 
 def cmd_show(argv):
@@ -272,11 +321,17 @@ def cmd_show(argv):
 
     fields = parse_trailer(trailer)
     head = head_oid()
+    if head is None:
+        # Same case cmd_checkpoint already guards: an unborn HEAD (e.g. right
+        # after `git checkout --orphan`). Without this, `compare` reaches
+        # `_is_ancestor`, which hands `None` to subprocess and raises.
+        sys.stderr.write("ERROR: this repo has no commits yet\n")
+        return 1
     print(compare(fields.get("HEAD", ""), head))
     now_dirty, now_untracked = tree_counts()
     changed = dirty_line(
-        int(fields.get("dirty", 0)),
-        int(fields.get("untracked", 0)),
+        _parse_field_int(fields.get("dirty")),
+        _parse_field_int(fields.get("untracked")),
         now_dirty,
         now_untracked,
     )
@@ -301,6 +356,9 @@ def main(argv):
         sys.stderr.write(__doc__)
         return 2
     verb = argv[1]
+    if verb in ("--help", "-h"):
+        sys.stdout.write(__doc__)
+        return 0
     if verb == "path":
         return cmd_path(argv)
     if verb == "checkpoint":
