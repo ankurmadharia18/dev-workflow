@@ -88,14 +88,17 @@ The plugin runs on Claude Code and the Codex CLI. Both load the same skills from
 | Skills | yes | yes |
 | How you invoke one | `/standup` | **ask for it** — `run the dev-workflow:standup skill`. Codex's `/` namespace is its own built-ins; there is no prompts directory to register skills into |
 | SessionStart brief | yes | yes — Codex finds `hooks/hooks.json` by path |
-| `CLAUDE_PLUGIN_ROOT` in a skill's shell | set | **unset** — resolve `DW_ROOT` instead |
+| `CLAUDE_PLUGIN_ROOT` in a skill's shell | **unset** | **unset** |
+| Resolving the framework | set `DW_ROOT` | set `DW_ROOT` — identical on both |
 | `/ticket-loop`, `/ticket-loop-parent` | yes | refuse — they need `claude -p` and Claude subagents |
 
 Notes that cost time to rediscover:
 
-- **`DW_ROOT`.** Codex exports no plugin-root variable. Each skill's preamble
-  tells you to set `DW_ROOT` to the directory two levels above its SKILL.md. Do
-  it before running the preamble.
+- **`DW_ROOT`, on both harnesses.** Neither Claude Code nor Codex exports a
+  plugin-root variable into a skill's shell. Each skill's preamble tells you to
+  set `DW_ROOT` to the directory two levels above its SKILL.md. Do it before
+  running the preamble — skipping it on Claude Code leaves the preamble falling
+  through to a relative path that does not exist in a target repo.
 - **The manifest takes no `hooks` key.** Codex's plugin validator rejects it. The
   hook still runs, because Codex discovers `hooks/hooks.json` by path and expands
   `${CLAUDE_PLUGIN_ROOT}` inside the hook command — a template token, not the

@@ -103,7 +103,7 @@ guard_position_ok() {
   local guard_line config_line dwroot_line
   guard_line="$(grep -n '^## 0. Harness check' "$file" | head -1 | cut -d: -f1)"
   config_line="$(grep -n "$config_heading" "$file" | head -1 | cut -d: -f1)"
-  dwroot_line="$(grep -n '\*\*Set `DW_ROOT` first' "$file" | head -1 | cut -d: -f1)"
+  dwroot_line="$(grep -n '\*\*Set `DW_ROOT` before the preamble' "$file" | head -1 | cut -d: -f1)"
   if [ -z "$guard_line" ] || [ -z "$config_line" ] || [ -z "$dwroot_line" ]; then
     fail "position lookup returned empty in ${file#$ROOT/} (guard_line=$guard_line config_line=$config_line dwroot_line=$dwroot_line)"
     return

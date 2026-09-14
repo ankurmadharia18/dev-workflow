@@ -27,17 +27,20 @@ or touches anything else. Configuration is the human's to own.
 ## Resolving the bundled framework files
 
 This skill reads two files that ship with the plugin. Resolve them with
-`${CLAUDE_PLUGIN_ROOT}` when Claude Code sets it, else with `${DW_ROOT}` (set
-below), else — from a framework checkout — drop the prefix and use the
-repo-relative path.
+`${DW_ROOT}` (set below) — or, from a framework checkout, drop the prefix and use
+the repo-relative path. Do not rely on `${CLAUDE_PLUGIN_ROOT}`: no harness
+exports it into a skill's shell.
 
-**Set `DW_ROOT` first, but only when `CLAUDE_PLUGIN_ROOT` is unset.** Claude Code
-sets `CLAUDE_PLUGIN_ROOT` for you; other harnesses (Codex) do not. When it is
-unset and this SKILL.md sits inside a plugin cache, export `DW_ROOT` as the
+**Set `DW_ROOT` before the preamble — on EVERY harness, Claude Code included.**
+Neither Claude Code nor Codex exports a plugin-root variable into a skill's
+shell, so without this the preamble cannot find the framework and falls through
+to a relative path that does not exist in a target repo. Export `DW_ROOT` as the
 absolute directory **two levels above this SKILL.md file** — write the path out
-in full, quoted, from the location your harness showed you. Example:
-`export DW_ROOT="$HOME/.codex/plugins/cache/dev-workflow/dev-workflow/<version>"`.
-Leave `DW_ROOT` unset when you are working from a framework checkout.
+in full, quoted, from the location your harness showed you. Examples:
+`export DW_ROOT="$HOME/.claude/plugins/cache/dev-workflow/dev-workflow/<version>"`
+or `export DW_ROOT="$HOME/.codex/plugins/cache/dev-workflow/dev-workflow/<version>"`.
+Skip it ONLY when you are working from a framework checkout, where the
+relative fallback is the correct answer.
 
 Then set `ROOT` once:
 

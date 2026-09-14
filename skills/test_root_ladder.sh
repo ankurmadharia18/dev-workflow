@@ -190,7 +190,7 @@ fi
 # section of the file: an agent reading top to bottom would still hit
 # `ROOT=...` with `DW_ROOT` unset. Compare whole-file line numbers, the way
 # test_harness_guard.sh's guard_position_ok already does for the harness guard.
-dwroot_para_line="$(grep -n '\*\*Set `DW_ROOT` first' "$SETUP" | head -1 | cut -d: -f1)"
+dwroot_para_line="$(grep -n '\*\*Set `DW_ROOT` before the preamble' "$SETUP" | head -1 | cut -d: -f1)"
 root_def_line="$(grep -n 'ROOT="${CLAUDE_PLUGIN_ROOT:-${DW_ROOT:-.}}"' "$SETUP" | head -1 | cut -d: -f1)"
 if [ -z "$dwroot_para_line" ] || [ -z "$root_def_line" ]; then
   fail "whole-file DW_ROOT-order lookup returned empty in $SETUP (dwroot_para_line=$dwroot_para_line root_def_line=$root_def_line)"
@@ -263,5 +263,21 @@ case "$out" in
   *) fail "broken reader was laundered into: $out" ;;
 esac
 rm -rf "$probe_dir"
+
+# --- the DW_ROOT instruction must not be conditional on CLAUDE_PLUGIN_ROOT ---
+# No harness exports CLAUDE_PLUGIN_ROOT into a skill's shell. An instruction that
+# says "set DW_ROOT only when CLAUDE_PLUGIN_ROOT is unset", or claims Claude Code
+# sets it, makes the agent skip the step and the ladder has no working rung.
+for f in "$ROOT"/skills/*/SKILL.md; do
+  if grep -q 'sets `CLAUDE_PLUGIN_ROOT` for you' "$f"; then
+    fail "${f#$ROOT/} claims Claude Code sets CLAUDE_PLUGIN_ROOT — it does not"
+  fi
+  if grep -q 'only when `CLAUDE_PLUGIN_ROOT` is unset' "$f"; then
+    fail "${f#$ROOT/} makes DW_ROOT conditional — it must be set on every harness"
+  fi
+  grep -q 'on EVERY harness' "$f" \
+    && pass "DW_ROOT instruction is unconditional in ${f#$ROOT/}" \
+    || fail "${f#$ROOT/} does not tell the agent to set DW_ROOT on every harness"
+done
 
 exit "$FAIL"
