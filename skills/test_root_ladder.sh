@@ -209,4 +209,32 @@ else
   pass "example config does not reference CLAUDE_PLUGIN_ROOT"
 fi
 
+# --- a failed config read must NOT be laundered into "no config" -----------
+# `[ -f x ] && cmd || echo "no x"` fires the || when the file is MISSING *or*
+# when cmd fails. A broken read then reads as "unconfigured repo", the skill
+# falls back to guessing, and a guessed base branch can open a PR into prod.
+for f in "$ROOT"/skills/*/SKILL.md; do
+  if grep -q 'dev-workflow.yml \]  *\\$' "$f" 2>/dev/null || grep -qE '^\[ -f dev-workflow\.yml \]' "$f"; then
+    fail "${f#$ROOT/} still uses [ -f ] && ... || echo — a read failure will read as 'no config'"
+  fi
+done
+for f in "$ROOT"/skills/*/SKILL.md; do
+  if grep -q 'missing-config fallbacks' "$f"; then
+    grep -q 'exists but could not be read' "$f" \
+      && pass "read failure is loud in ${f#$ROOT/}" \
+      || fail "${f#$ROOT/} claims 'no dev-workflow.yml' without a distinct read-failure branch"
+  fi
+done
+
+# behavioural: config PRESENT but the reader broken must say ERROR, not "no config"
+probe_dir="$(mktemp -d)"
+printf 'repo:\n  base_branch: develop\n' > "$probe_dir/dev-workflow.yml"
+blk="$(awk '/^if \[ -f dev-workflow\.yml \]; then/{f=1} f{print; if (/^fi$/) exit}' "$ROOT/skills/cleanup/SKILL.md")"
+out="$(cd "$probe_dir" && DW='false' bash -c "$blk" 2>&1)"
+case "$out" in
+  *"could not be read"*) pass "broken reader with config present reports ERROR, not 'no config'" ;;
+  *) fail "broken reader was laundered into: $out" ;;
+esac
+rm -rf "$probe_dir"
+
 exit "$FAIL"

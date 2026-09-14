@@ -67,11 +67,19 @@ describes the rule.
 
 Neither harness reads the clone live. Both copy it at install time.
 
-    claude plugin marketplace update dev-workflow
+    claude plugin uninstall dev-workflow@dev-workflow
+    claude plugin install dev-workflow@dev-workflow
 
     codex plugin add dev-workflow@dev-workflow   # then start a NEW thread
 
-`codex plugin marketplace upgrade` refreshes Git marketplaces only. It does
+**Claude Code needs the uninstall.** `claude plugin update` compares VERSION
+numbers, not content, so it reports "already at the latest version" and copies
+nothing — your edits stay invisible while the command looks like it worked.
+`claude plugin marketplace update` refreshes the marketplace metadata only, not
+the installed plugin. Uninstall plus install is the reliable pair.
+
+`codex plugin add` re-copies unconditionally, so Codex needs no uninstall.
+`codex plugin marketplace upgrade` refreshes Git marketplaces only and does
 nothing for a local one.
 
 ## 5. Test the handoff across harnesses

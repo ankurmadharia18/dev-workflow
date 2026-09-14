@@ -61,9 +61,12 @@ if command -v dw-config >/dev/null 2>&1 && dw-config 2>&1 | grep -q -- '--batch'
 elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then DW="$PY ${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py" # plugin install (Claude Code)
 elif [ -n "${DW_ROOT:-}" ]; then DW="$PY ${DW_ROOT}/dev-workflow/dw-config.py"                       # plugin install (other harness)
 else DW="$PY dev-workflow/dw-config.py"; fi                                                          # framework checkout
-[ -f dev-workflow.yml ] \
-  && eval "$DW dev-workflow.yml --batch tracker.team tracker.project= tracker.roles.queue.label tracker.roles.queue.states tracker.roles.blocked.label tracker.roles.exclude.labels tracker.roles.done.state repo.base_branch repo.prod_branch quality.test quality.lint build.model build.subagent_model= build.cap_per_pass guardrails.diff_budget.max_lines guardrails.diff_budget.max_files" \
-  || echo "no dev-workflow.yml — cannot run a pass; tell the user to run /setup"
+if [ -f dev-workflow.yml ]; then
+  eval "$DW dev-workflow.yml --batch tracker.team tracker.project= tracker.roles.queue.label tracker.roles.queue.states tracker.roles.blocked.label tracker.roles.exclude.labels tracker.roles.done.state repo.base_branch repo.prod_branch quality.test quality.lint build.model build.subagent_model= build.cap_per_pass guardrails.diff_budget.max_lines guardrails.diff_budget.max_files" \
+    || echo "ERROR: dev-workflow.yml exists but could not be read — STOP. Do NOT fall back to defaults; a wrong base branch can open a PR into prod."
+else
+  echo "no dev-workflow.yml — using the skill's missing-config fallbacks"
+fi
 ```
 
 - **Tracker** — `tracker.team` (the team/workspace), `tracker.roles`:

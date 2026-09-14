@@ -45,9 +45,12 @@ if command -v dw-config >/dev/null 2>&1 && dw-config 2>&1 | grep -q -- '--batch'
 elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then DW="$PY ${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py" # plugin install (Claude Code)
 elif [ -n "${DW_ROOT:-}" ]; then DW="$PY ${DW_ROOT}/dev-workflow/dw-config.py"                       # plugin install (other harness)
 else DW="$PY dev-workflow/dw-config.py"; fi                                                          # framework checkout
-[ -f dev-workflow.yml ] \
-  && eval "$DW dev-workflow.yml --batch board.snapshot board.views tracker.team tracker.project= tracker.ticket_prefix tracker.roles.exclude.labels tracker.roles.queue.states" \
-  || echo "no dev-workflow.yml — using the skill's missing-config fallbacks"
+if [ -f dev-workflow.yml ]; then
+  eval "$DW dev-workflow.yml --batch board.snapshot board.views tracker.team tracker.project= tracker.ticket_prefix tracker.roles.exclude.labels tracker.roles.queue.states" \
+    || echo "ERROR: dev-workflow.yml exists but could not be read — STOP. Do NOT fall back to defaults; a wrong base branch can open a PR into prod."
+else
+  echo "no dev-workflow.yml — using the skill's missing-config fallbacks"
+fi
 ```
 
 Never hardcode a team, label, state, or command:

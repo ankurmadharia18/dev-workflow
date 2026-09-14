@@ -68,9 +68,12 @@ if command -v dw-config >/dev/null 2>&1 && dw-config 2>&1 | grep -q -- '--batch'
 elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then DW="$PY ${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py" # plugin install (Claude Code)
 elif [ -n "${DW_ROOT:-}" ]; then DW="$PY ${DW_ROOT}/dev-workflow/dw-config.py"                       # plugin install (other harness)
 else DW="$PY dev-workflow/dw-config.py"; fi                                                          # framework checkout
-[ -f dev-workflow.yml ] \
-  && eval "$DW dev-workflow.yml --batch repo.base_branch repo.prod_branch deploy.trigger deploy.announce version.file version.scheme version.changelog quality.test" \
-  || echo "no dev-workflow.yml — STOP: release needs prod_branch + deploy.trigger configured"
+if [ -f dev-workflow.yml ]; then
+  eval "$DW dev-workflow.yml --batch repo.base_branch repo.prod_branch deploy.trigger deploy.announce version.file version.scheme version.changelog quality.test" \
+    || echo "ERROR: dev-workflow.yml exists but could not be read — STOP. Do NOT fall back to defaults; a wrong base branch can open a PR into prod."
+else
+  echo "no dev-workflow.yml — using the skill's missing-config fallbacks"
+fi
 ```
 
 - `repo.base_branch` — the trunk you release *from*. `repo.prod_branch` — the prod
