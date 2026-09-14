@@ -21,8 +21,8 @@ extracted="$(awk '/^if uv run python3 -c pass/{f=1} f{print; if (/^else DW=/) ex
 rung_count="$(printf '%s\n' "$extracted" | grep -c '.')"
 if [ "$rung_count" = "5" ] \
   && printf '%s' "$extracted" | grep -q 'dw-config"' \
-  && printf '%s' "$extracted" | grep -q 'CLAUDE_PLUGIN_ROOT:-' \
-  && printf '%s' "$extracted" | grep -q 'DW_ROOT:-' \
+  && printf '%s' "$extracted" | grep -q 'f "${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py"' \
+  && printf '%s' "$extracted" | grep -q 'f "${DW_ROOT}/dev-workflow/dw-config.py"' \
   && printf '%s' "$extracted" | grep -q 'else DW="$PY dev-workflow/dw-config.py"; fi' \
   && printf '%s' "$extracted" | grep -q 'if uv run python3 -c pass'; then
   pass "extracted the expected probe + four-rung ladder from $CANON"
@@ -47,17 +47,25 @@ run_extracted() {
   env -i PATH="$SAFE_PATH" "$@" bash -c "$code"$'\nprintf "%s" "$DW"' 2>/dev/null
 }
 
+# The rungs now test whether the FILE exists, not whether a variable is set.
+# That is deliberate: the harness substitutes ${CLAUDE_PLUGIN_ROOT} into the
+# skill TEXT but leaves the guard's variable unset in the shell, so a -n test
+# skipped a rung whose correct path was already on the same line. Fixtures must
+# therefore contain a real dw-config.py.
+mkfix() { d="$(mktemp -d)"; mkdir -p "$d/dev-workflow"; : > "$d/dev-workflow/dw-config.py"; printf '%s' "$d"; }
+CLAUDE_FIX="$(mkfix)"; CODEX_FIX="$(mkfix)"
+
 # rung 2 wins over rung 3 (Claude Code behaviour must not change)
-got="$(run_extracted "$extracted" CLAUDE_PLUGIN_ROOT=/claude DW_ROOT=/codex)"
+got="$(run_extracted "$extracted" CLAUDE_PLUGIN_ROOT="$CLAUDE_FIX" DW_ROOT="$CODEX_FIX")"
 case "$got" in
-  *" /claude/dev-workflow/dw-config.py") pass "CLAUDE_PLUGIN_ROOT wins over DW_ROOT (real chain)" ;;
+  *" $CLAUDE_FIX/dev-workflow/dw-config.py") pass "CLAUDE_PLUGIN_ROOT wins over DW_ROOT (real chain)" ;;
   *) fail "CLAUDE_PLUGIN_ROOT should win, got: $got" ;;
 esac
 
 # rung 3 fires when only DW_ROOT is set (the Codex case)
-got="$(run_extracted "$extracted" DW_ROOT=/codex)"
+got="$(run_extracted "$extracted" DW_ROOT="$CODEX_FIX")"
 case "$got" in
-  *" /codex/dev-workflow/dw-config.py") pass "DW_ROOT resolves when CLAUDE_PLUGIN_ROOT is unset (real chain)" ;;
+  *" $CODEX_FIX/dev-workflow/dw-config.py") pass "DW_ROOT resolves when CLAUDE_PLUGIN_ROOT is unset (real chain)" ;;
   *) fail "DW_ROOT should resolve, got: $got" ;;
 esac
 
@@ -74,15 +82,34 @@ case "$got" in
   *) fail "unexpected runner in: $got" ;;
 esac
 
+# THE REGRESSION THIS GUARDS: harness substituted the path, variable NOT set.
+# A -n "${CLAUDE_PLUGIN_ROOT:-}" guard skips this rung and silently falls through
+# to a checkout path that does not exist in a target repo.
+subbed="$(printf '%s' "$extracted" | sed "s#\${CLAUDE_PLUGIN_ROOT}#$CLAUDE_FIX#g")"
+got="$(run_extracted "$subbed")"
+case "$got" in
+  *" $CLAUDE_FIX/dev-workflow/dw-config.py") pass "substituted path resolves even with the variable unset" ;;
+  *) fail "substituted path was skipped (the marketplace-install bug), got: $got" ;;
+esac
+
+# a variable pointing at a path with no dw-config.py must NOT win the rung
+got="$(run_extracted "$extracted" CLAUDE_PLUGIN_ROOT=/nonexistent-xyz)"
+case "$got" in
+  *"/nonexistent-xyz/"*) fail "a bogus CLAUDE_PLUGIN_ROOT was accepted: $got" ;;
+  *) pass "a plugin root with no dw-config.py is rejected" ;;
+esac
+
+rm -rf "$CLAUDE_FIX" "$CODEX_FIX"
+
 # --- every SKILL.md must carry the DW_ROOT rung ----------------------------
 for f in "$ROOT"/skills/*/SKILL.md; do
-  grep -q 'DW_ROOT:-' "$f" \
+  grep -q 'f "${DW_ROOT}/dev-workflow/dw-config.py"' "$f" \
     && pass "DW_ROOT rung present in ${f#$ROOT/}" \
     || fail "DW_ROOT rung missing in ${f#$ROOT/}"
 done
 
 # --- the 8 copies must stay identical --------------------------------------
-copies="$(grep -h 'elif \[ -n "${DW_ROOT:-}" \]' "$ROOT"/skills/*/SKILL.md | sort -u | wc -l | tr -d ' ')"
+copies="$(grep -h 'elif \[ -f "${DW_ROOT}/dev-workflow/dw-config.py" \]' "$ROOT"/skills/*/SKILL.md | sort -u | wc -l | tr -d ' ')"
 [ "$copies" = "1" ] \
   && pass "all DW_ROOT rungs are byte-identical" \
   || fail "DW_ROOT rung has drifted into $copies variants"
@@ -91,8 +118,8 @@ copies="$(grep -h 'elif \[ -n "${DW_ROOT:-}" \]' "$ROOT"/skills/*/SKILL.md | sor
 # Byte-identical text does not guarantee correct order - this pins position
 # so CLAUDE_PLUGIN_ROOT keeps winning in every file, not only in the canon.
 for f in "$ROOT"/skills/*/SKILL.md; do
-  claude_line="$(grep -n 'elif \[ -n "${CLAUDE_PLUGIN_ROOT:-}" \]' "$f" | head -1 | cut -d: -f1)"
-  dwroot_line="$(grep -n 'elif \[ -n "${DW_ROOT:-}" \]' "$f" | head -1 | cut -d: -f1)"
+  claude_line="$(grep -n 'elif \[ -f "${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py" \]' "$f" | head -1 | cut -d: -f1)"
+  dwroot_line="$(grep -n 'elif \[ -f "${DW_ROOT}/dev-workflow/dw-config.py" \]' "$f" | head -1 | cut -d: -f1)"
   if [ -n "$claude_line" ] && [ -n "$dwroot_line" ] && [ "$dwroot_line" -gt "$claude_line" ]; then
     pass "DW_ROOT rung sits after CLAUDE_PLUGIN_ROOT rung in ${f#$ROOT/}"
   else

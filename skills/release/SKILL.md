@@ -65,8 +65,8 @@ Leave `DW_ROOT` unset when you are working from a framework checkout.
 ```bash
 if uv run python3 -c pass >/dev/null 2>&1; then PY="uv run"; else PY="python3"; fi                  # uv is unusable where its cache is unwritable (a Codex sandbox)
 if command -v dw-config >/dev/null 2>&1 && dw-config 2>&1 | grep -q -- '--batch'; then DW="dw-config"   # hardened install (PATH), only if --batch-capable
-elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then DW="$PY ${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py" # plugin install (Claude Code)
-elif [ -n "${DW_ROOT:-}" ]; then DW="$PY ${DW_ROOT}/dev-workflow/dw-config.py"                       # plugin install (other harness)
+elif [ -f "${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py" ]; then DW="$PY ${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py"  # plugin install — test the FILE: the harness substitutes the path but not the guard
+elif [ -f "${DW_ROOT}/dev-workflow/dw-config.py" ]; then DW="$PY ${DW_ROOT}/dev-workflow/dw-config.py"                        # plugin install (other harness)
 else DW="$PY dev-workflow/dw-config.py"; fi                                                          # framework checkout
 if [ -f dev-workflow.yml ]; then
   eval "$DW dev-workflow.yml --batch repo.base_branch repo.prod_branch deploy.trigger deploy.announce version.file version.scheme version.changelog quality.test" \
