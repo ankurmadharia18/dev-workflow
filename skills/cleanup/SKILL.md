@@ -40,14 +40,13 @@ in full, quoted, from the location your harness showed you. Example:
 Leave `DW_ROOT` unset when you are working from a framework checkout.
 
 ```bash
+if uv run python3 -c pass >/dev/null 2>&1; then PY="uv run"; else PY="python3"; fi                  # uv is unusable where its cache is unwritable (a Codex sandbox)
 if command -v dw-config >/dev/null 2>&1 && dw-config 2>&1 | grep -q -- '--batch'; then DW="dw-config"   # hardened install (PATH), only if --batch-capable
-elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then DW="uv run ${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py" # plugin install (Claude Code)
-elif [ -n "${DW_ROOT:-}" ]; then DW="uv run ${DW_ROOT}/dev-workflow/dw-config.py"                       # plugin install (other harness)
-else DW="uv run dev-workflow/dw-config.py"; fi                                                          # framework checkout
+elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then DW="$PY ${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py" # plugin install (Claude Code)
+elif [ -n "${DW_ROOT:-}" ]; then DW="$PY ${DW_ROOT}/dev-workflow/dw-config.py"                       # plugin install (other harness)
+else DW="$PY dev-workflow/dw-config.py"; fi                                                          # framework checkout
 [ -f dev-workflow.yml ] \
-  && $DW dev-workflow.yml --batch repo.base_branch repo.prod_branch quality.lint quality.test \
-       quality.bootstrap version.changelog tracker.team tracker.roles.done.state \
-       tracker.roles.exclude.labels blog.skill blog.posts_dir=docs/blog \
+  && eval "$DW dev-workflow.yml --batch repo.base_branch repo.prod_branch quality.lint quality.test quality.bootstrap version.changelog tracker.team tracker.roles.done.state tracker.roles.exclude.labels blog.skill blog.posts_dir=docs/blog" \
   || echo "no dev-workflow.yml — using the skill's missing-config fallbacks"
 ```
 

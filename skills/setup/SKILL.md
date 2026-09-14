@@ -84,12 +84,12 @@ human's confirmation.
 `DW_ROOT` is already set (see "Resolving the bundled framework files" above).
 
 ```bash
+if uv run python3 -c pass >/dev/null 2>&1; then PY="uv run"; else PY="python3"; fi                  # uv is unusable where its cache is unwritable (a Codex sandbox)
 if command -v dw-config >/dev/null 2>&1 && dw-config 2>&1 | grep -q -- '--batch'; then DW="dw-config"   # hardened install (PATH), only if --batch-capable
-elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then DW="uv run ${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py" # plugin install (Claude Code)
-elif [ -n "${DW_ROOT:-}" ]; then DW="uv run ${DW_ROOT}/dev-workflow/dw-config.py"                       # plugin install (other harness)
-else DW="uv run dev-workflow/dw-config.py"; fi                                                          # framework checkout
-$DW dev-workflow.yml --batch repo.base_branch repo.prod_branch tracker.provider tracker.team \
-  tracker.ticket_prefix quality.test quality.lint agent.enabled=false
+elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then DW="$PY ${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py" # plugin install (Claude Code)
+elif [ -n "${DW_ROOT:-}" ]; then DW="$PY ${DW_ROOT}/dev-workflow/dw-config.py"                       # plugin install (other harness)
+else DW="$PY dev-workflow/dw-config.py"; fi                                                          # framework checkout
+eval "$DW dev-workflow.yml --batch repo.base_branch repo.prod_branch tracker.provider tracker.team tracker.ticket_prefix quality.test quality.lint agent.enabled=false"
 ```
 
 **If it's absent:** interview the user for the required values, then write the

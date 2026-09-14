@@ -14,19 +14,20 @@ pass() { printf 'ok: %s\n' "$1"; }
 # `if/elif/elif/else/fi` lines that ship in the file, so these checks fail if
 # the real chain ever breaks - not just a copy of it living in this test.
 CANON="$ROOT/skills/cleanup/SKILL.md"
-extracted="$(awk '/^if command -v dw-config/{f=1} f{print; if (/^else DW=/) exit}' "$CANON")"
+extracted="$(awk '/^if uv run python3 -c pass/{f=1} f{print; if (/^else DW=/) exit}' "$CANON")"
 
 # An extraction that comes back empty, or missing a rung, must FAIL loudly -
 # never resolve to an empty $DW and pass by accident.
 rung_count="$(printf '%s\n' "$extracted" | grep -c '.')"
-if [ "$rung_count" = "4" ] \
+if [ "$rung_count" = "5" ] \
   && printf '%s' "$extracted" | grep -q 'dw-config"' \
   && printf '%s' "$extracted" | grep -q 'CLAUDE_PLUGIN_ROOT:-' \
   && printf '%s' "$extracted" | grep -q 'DW_ROOT:-' \
-  && printf '%s' "$extracted" | grep -q 'else DW="uv run dev-workflow/dw-config.py"; fi'; then
-  pass "extracted the expected four-rung ladder from $CANON"
+  && printf '%s' "$extracted" | grep -q 'else DW="$PY dev-workflow/dw-config.py"; fi' \
+  && printf '%s' "$extracted" | grep -q 'if uv run python3 -c pass'; then
+  pass "extracted the expected probe + four-rung ladder from $CANON"
 else
-  fail "extraction from $CANON did not yield the expected four rungs (got $rung_count lines): $extracted"
+  fail "extraction from $CANON did not yield the probe plus four rungs (got $rung_count lines): $extracted"
 fi
 
 # Run the extracted (real) code under a clean environment plus the case's
@@ -48,21 +49,30 @@ run_extracted() {
 
 # rung 2 wins over rung 3 (Claude Code behaviour must not change)
 got="$(run_extracted "$extracted" CLAUDE_PLUGIN_ROOT=/claude DW_ROOT=/codex)"
-[ "$got" = "uv run /claude/dev-workflow/dw-config.py" ] \
-  && pass "CLAUDE_PLUGIN_ROOT wins over DW_ROOT (real chain)" \
-  || fail "CLAUDE_PLUGIN_ROOT should win, got: $got"
+case "$got" in
+  *" /claude/dev-workflow/dw-config.py") pass "CLAUDE_PLUGIN_ROOT wins over DW_ROOT (real chain)" ;;
+  *) fail "CLAUDE_PLUGIN_ROOT should win, got: $got" ;;
+esac
 
 # rung 3 fires when only DW_ROOT is set (the Codex case)
 got="$(run_extracted "$extracted" DW_ROOT=/codex)"
-[ "$got" = "uv run /codex/dev-workflow/dw-config.py" ] \
-  && pass "DW_ROOT resolves when CLAUDE_PLUGIN_ROOT is unset (real chain)" \
-  || fail "DW_ROOT should resolve, got: $got"
+case "$got" in
+  *" /codex/dev-workflow/dw-config.py") pass "DW_ROOT resolves when CLAUDE_PLUGIN_ROOT is unset (real chain)" ;;
+  *) fail "DW_ROOT should resolve, got: $got" ;;
+esac
 
 # rung 4 still fires when neither is set (framework checkout)
 got="$(run_extracted "$extracted")"
-[ "$got" = "uv run dev-workflow/dw-config.py" ] \
-  && pass "framework-checkout fallback intact (real chain)" \
-  || fail "checkout fallback broken, got: $got"
+case "$got" in
+  *" dev-workflow/dw-config.py") pass "framework-checkout fallback intact (real chain)" ;;
+  *) fail "checkout fallback broken, got: $got" ;;
+esac
+
+# the runner itself must be one the probe can actually pick
+case "$got" in
+  "uv run "*|"python3 "*) pass "runner is uv run or python3, chosen by probe" ;;
+  *) fail "unexpected runner in: $got" ;;
+esac
 
 # --- every SKILL.md must carry the DW_ROOT rung ----------------------------
 for f in "$ROOT"/skills/*/SKILL.md; do
@@ -161,6 +171,42 @@ elif [ "$dwroot_para_line" -lt "$root_def_line" ]; then
   pass "setup's DW_ROOT paragraph precedes ROOT= whole-file"
 else
   fail "setup's DW_ROOT paragraph does not precede ROOT= whole-file (dwroot_para_line=$dwroot_para_line root_def_line=$root_def_line)"
+fi
+
+# --- the invocation must survive zsh, which does NOT word-split -------------
+# Codex runs commands through /bin/zsh. A bare `$DW args` works in bash and
+# fails in zsh with "no such file or directory: uv run ...", so every skill
+# wraps the call in eval. This asserts that, and proves it behaviourally.
+for f in "$ROOT"/skills/*/SKILL.md; do
+  if grep -qE '^\s*(&&\s*)?\$DW dev-workflow\.yml' "$f"; then
+    fail "bare \$DW invocation in ${f#$ROOT/} breaks under zsh — wrap it in eval"
+  else
+    pass "invocation is eval-wrapped in ${f#$ROOT/}"
+  fi
+done
+
+if command -v zsh >/dev/null 2>&1; then
+  probe='DW="/bin/echo ok"; eval "$DW split-correctly"'
+  z="$(zsh -c "$probe" 2>&1)"
+  b="$(bash -c "$probe" 2>&1)"
+  [ "$z" = "ok split-correctly" ] && [ "$b" = "$z" ] \
+    && pass "eval form word-splits identically in zsh and bash" \
+    || fail "eval form differs between shells (zsh=$z bash=$b)"
+else
+  pass "zsh absent — cross-shell check skipped"
+fi
+
+# --- a config that references CLAUDE_PLUGIN_ROOT needs a DW_ROOT rung -------
+# Same gap one layer down: on Codex the Claude variable is unset, so a config
+# command without a DW_ROOT rung falls through to a checkout-relative path that
+# does not exist in a target repo.
+EX="$ROOT/dev-workflow/dev-workflow.example.yml"
+if grep -q 'CLAUDE_PLUGIN_ROOT' "$EX"; then
+  grep -q 'DW_ROOT' "$EX" \
+    && pass "example config offers a DW_ROOT rung beside CLAUDE_PLUGIN_ROOT" \
+    || fail "example config uses CLAUDE_PLUGIN_ROOT with no DW_ROOT rung — breaks on Codex"
+else
+  pass "example config does not reference CLAUDE_PLUGIN_ROOT"
 fi
 
 exit "$FAIL"

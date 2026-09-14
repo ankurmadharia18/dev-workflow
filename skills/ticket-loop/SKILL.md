@@ -56,15 +56,13 @@ in full, quoted, from the location your harness showed you. Example:
 Leave `DW_ROOT` unset when you are working from a framework checkout.
 
 ```bash
+if uv run python3 -c pass >/dev/null 2>&1; then PY="uv run"; else PY="python3"; fi                  # uv is unusable where its cache is unwritable (a Codex sandbox)
 if command -v dw-config >/dev/null 2>&1 && dw-config 2>&1 | grep -q -- '--batch'; then DW="dw-config"   # hardened install (PATH), only if --batch-capable
-elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then DW="uv run ${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py" # plugin install (Claude Code)
-elif [ -n "${DW_ROOT:-}" ]; then DW="uv run ${DW_ROOT}/dev-workflow/dw-config.py"                       # plugin install (other harness)
-else DW="uv run dev-workflow/dw-config.py"; fi                                                          # framework checkout
+elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then DW="$PY ${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py" # plugin install (Claude Code)
+elif [ -n "${DW_ROOT:-}" ]; then DW="$PY ${DW_ROOT}/dev-workflow/dw-config.py"                       # plugin install (other harness)
+else DW="$PY dev-workflow/dw-config.py"; fi                                                          # framework checkout
 [ -f dev-workflow.yml ] \
-  && $DW dev-workflow.yml --batch tracker.team tracker.project= tracker.roles.queue.label tracker.roles.queue.states \
-       tracker.roles.blocked.label tracker.roles.exclude.labels tracker.roles.done.state \
-       repo.base_branch repo.prod_branch quality.test quality.lint build.model build.subagent_model= build.cap_per_pass \
-       guardrails.diff_budget.max_lines guardrails.diff_budget.max_files \
+  && eval "$DW dev-workflow.yml --batch tracker.team tracker.project= tracker.roles.queue.label tracker.roles.queue.states tracker.roles.blocked.label tracker.roles.exclude.labels tracker.roles.done.state repo.base_branch repo.prod_branch quality.test quality.lint build.model build.subagent_model= build.cap_per_pass guardrails.diff_budget.max_lines guardrails.diff_budget.max_files" \
   || echo "no dev-workflow.yml — cannot run a pass; tell the user to run /setup"
 ```
 
