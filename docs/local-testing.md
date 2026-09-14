@@ -53,7 +53,12 @@ Open either harness in the target repo. Pass no flags:
 
 Both load the same eight skills and the same helpers.
 
-**One difference.** Codex exports no plugin-root variable to a skill's shell, so
+**Invoking a skill differs.** In Claude Code you type `/standup`. In Codex you
+**ask for the skill** — `run the dev-workflow:standup skill`. Codex's `/`
+namespace holds its own built-ins, and there is no prompts directory a plugin can
+register into, so `/standup` returns `Unrecognized command`.
+
+**`DW_ROOT` differs.** Codex exports no plugin-root variable to a skill's shell, so
 each skill preamble asks you to set `DW_ROOT` to the plugin path. Claude Code
 sets `CLAUDE_PLUGIN_ROOT` itself, so nothing is needed there. `AGENTS.md`
 describes the rule.

@@ -68,10 +68,12 @@ enumerated in [`skills/ticket-loop/env.example`](skills/ticket-loop/env.example)
    codex plugin add dev-workflow@dev-workflow
    ```
 
-   One difference on Codex: the autonomous tiers (`/ticket-loop`,
-   `/ticket-loop-parent`) refuse to run — they need `claude -p` and Claude
-   subagents. The six session skills work the same on both harnesses, and so does
-   the session brief.
+   Two differences on Codex. **You invoke a skill by asking for it, not with a
+   slash command** — Codex's `/` namespace holds its own built-ins, so `/standup`
+   is not recognised there. Say `run the dev-workflow:standup skill` instead. And
+   the autonomous tiers (`ticket-loop`, `ticket-loop-parent`) refuse to run —
+   they need `claude -p` and Claude subagents. Everything else, the session brief
+   included, behaves the same on both.
 
    Developing against a **local** marketplace: `codex plugin marketplace upgrade`
    refreshes Git marketplaces only. To pick up an edit to a local clone, re-run

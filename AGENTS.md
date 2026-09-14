@@ -86,6 +86,7 @@ The plugin runs on Claude Code and the Codex CLI. Both load the same skills from
 | | Claude Code | Codex CLI |
 |---|---|---|
 | Skills | yes | yes |
+| How you invoke one | `/standup` | **ask for it** — `run the dev-workflow:standup skill`. Codex's `/` namespace is its own built-ins; there is no prompts directory to register skills into |
 | SessionStart brief | yes | yes — Codex finds `hooks/hooks.json` by path |
 | `CLAUDE_PLUGIN_ROOT` in a skill's shell | set | **unset** — resolve `DW_ROOT` instead |
 | `/ticket-loop`, `/ticket-loop-parent` | yes | refuse — they need `claude -p` and Claude subagents |
