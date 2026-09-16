@@ -36,6 +36,22 @@ is still independently valid (a developer can run the interactive skills in it
 directly, project-scoped). This skill replaces it only for the parent entry,
 selected by `agent.skill` in config.
 
+## 0. Harness check (run before anything else)
+
+This skill runs on Claude Code only. It shells out to `claude -p` and dispatches
+Claude subagents; neither exists on another harness.
+
+```bash
+if [ -n "${CODEX_THREAD_ID:-}" ] || [ -z "${CLAUDECODE:-}" ]; then
+  echo "ticket-loop-parent runs on Claude Code only."
+  echo "On this harness use the session skills instead: /standup, /worktree, /cleanup, /release."
+  exit 1
+fi
+```
+
+Stop here when the guard fires. Report the message to the user and do nothing
+else. Do not try to emulate the loop by hand.
+
 ## The two planes
 
 - **Management (this skill, the parent checkout):** the Linear team, the
@@ -69,16 +85,29 @@ Layout (the parent repo root = the roster entry's `work_tree`):
 this preamble ONCE to resolve the config reader and load every key the pass
 uses; never hardcode any of them:
 
+**Set `DW_ROOT` before the preamble — on EVERY harness, Claude Code included.**
+Neither Claude Code nor Codex exports a plugin-root variable into a skill's
+shell, so without this the preamble cannot find the framework and falls through
+to a relative path that does not exist in a target repo. Export `DW_ROOT` as the
+absolute directory **two levels above this SKILL.md file** — write the path out
+in full, quoted, from the location your harness showed you. Examples:
+`export DW_ROOT="$HOME/.claude/plugins/cache/dev-workflow/dev-workflow/<version>"`
+or `export DW_ROOT="$HOME/.codex/plugins/cache/dev-workflow/dev-workflow/<version>"`.
+Skip it ONLY when you are working from a framework checkout, where the
+relative fallback is the correct answer.
+
 ```bash
+if uv run python3 -c pass >/dev/null 2>&1; then PY="uv run"; else PY="python3"; fi                  # uv is unusable where its cache is unwritable (a Codex sandbox)
 if command -v dw-config >/dev/null 2>&1 && dw-config 2>&1 | grep -q -- '--batch'; then DW="dw-config"   # hardened install (PATH), only if --batch-capable
-elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then DW="uv run ${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py" # plugin install
-else DW="uv run dev-workflow/dw-config.py"; fi                                                          # framework checkout
-[ -f dev-workflow.yml ] \
-  && $DW dev-workflow.yml --batch tracker.team tracker.project= tracker.intake_project= tracker.roles.queue.label tracker.roles.queue.states \
-       tracker.roles.blocked.label tracker.roles.exclude.labels tracker.roles.done.state \
-       chat.provider agent.skill build.model build.cap_per_pass \
-       guardrails.diff_budget.max_lines guardrails.diff_budget.max_files \
-  || echo "no dev-workflow.yml — cannot run a pass; tell the user to run /setup"
+elif [ -f "${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py" ]; then DW="$PY ${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py"  # plugin install — test the FILE: the harness substitutes the path but not the guard
+elif [ -f "${DW_ROOT}/dev-workflow/dw-config.py" ]; then DW="$PY ${DW_ROOT}/dev-workflow/dw-config.py"                        # plugin install (other harness)
+else DW="$PY dev-workflow/dw-config.py"; fi                                                          # framework checkout
+if [ -f dev-workflow.yml ]; then
+  eval "$DW dev-workflow.yml --batch tracker.team tracker.project= tracker.intake_project= tracker.roles.queue.label tracker.roles.queue.states tracker.roles.blocked.label tracker.roles.exclude.labels tracker.roles.done.state chat.provider agent.skill build.model build.cap_per_pass guardrails.diff_budget.max_lines guardrails.diff_budget.max_files" \
+    || echo "ERROR: dev-workflow.yml exists but could not be read — STOP. Do NOT fall back to defaults; a wrong base branch can open a PR into prod."
+else
+  echo "no dev-workflow.yml — using the skill's missing-config fallbacks"
+fi
 ```
 
 - **`tracker.team`** — the ONE Linear team; the parent reads the WHOLE team.

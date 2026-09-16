@@ -31,15 +31,29 @@ explicit authorization to push and open a PR.
 key this skill uses; the list below explains each. No `dev-workflow.yml` → the
 preamble says so and the missing-config fallbacks in the procedure take over.
 
+**Set `DW_ROOT` before the preamble — on EVERY harness, Claude Code included.**
+Neither Claude Code nor Codex exports a plugin-root variable into a skill's
+shell, so without this the preamble cannot find the framework and falls through
+to a relative path that does not exist in a target repo. Export `DW_ROOT` as the
+absolute directory **two levels above this SKILL.md file** — write the path out
+in full, quoted, from the location your harness showed you. Examples:
+`export DW_ROOT="$HOME/.claude/plugins/cache/dev-workflow/dev-workflow/<version>"`
+or `export DW_ROOT="$HOME/.codex/plugins/cache/dev-workflow/dev-workflow/<version>"`.
+Skip it ONLY when you are working from a framework checkout, where the
+relative fallback is the correct answer.
+
 ```bash
+if uv run python3 -c pass >/dev/null 2>&1; then PY="uv run"; else PY="python3"; fi                  # uv is unusable where its cache is unwritable (a Codex sandbox)
 if command -v dw-config >/dev/null 2>&1 && dw-config 2>&1 | grep -q -- '--batch'; then DW="dw-config"   # hardened install (PATH), only if --batch-capable
-elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then DW="uv run ${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py" # plugin install
-else DW="uv run dev-workflow/dw-config.py"; fi                                                          # framework checkout
-[ -f dev-workflow.yml ] \
-  && $DW dev-workflow.yml --batch repo.base_branch repo.prod_branch quality.lint quality.test \
-       quality.bootstrap version.changelog tracker.team tracker.roles.done.state \
-       tracker.roles.exclude.labels blog.skill blog.posts_dir=docs/blog \
-  || echo "no dev-workflow.yml — using the skill's missing-config fallbacks"
+elif [ -f "${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py" ]; then DW="$PY ${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py"  # plugin install — test the FILE: the harness substitutes the path but not the guard
+elif [ -f "${DW_ROOT}/dev-workflow/dw-config.py" ]; then DW="$PY ${DW_ROOT}/dev-workflow/dw-config.py"                        # plugin install (other harness)
+else DW="$PY dev-workflow/dw-config.py"; fi                                                          # framework checkout
+if [ -f dev-workflow.yml ]; then
+  eval "$DW dev-workflow.yml --batch repo.base_branch repo.prod_branch quality.lint quality.test quality.bootstrap version.changelog tracker.team tracker.roles.done.state tracker.roles.exclude.labels blog.skill blog.posts_dir=docs/blog" \
+    || echo "ERROR: dev-workflow.yml exists but could not be read — STOP. Do NOT fall back to defaults; a wrong base branch can open a PR into prod."
+else
+  echo "no dev-workflow.yml — using the skill's missing-config fallbacks"
+fi
 ```
 
 - `repo.base_branch` — the integration trunk every feature PR targets. Merging a
@@ -189,6 +203,17 @@ link.** Confirm it returned a real `…/pull/<number>` URL before reporting succ
     --title "<summary>" --body "<body>"
   ```
 - **Open PR exists** → `gh pr edit --body "<refreshed body>"`.
+
+Record a checkpoint (`handoff.py checkpoint`) so a session resuming on this
+branch knows where the PR got to:
+
+```bash
+HANDOFF="${CLAUDE_PLUGIN_ROOT:-${DW_ROOT:-.}}/dev-workflow/handoff.py"
+python3 "$HANDOFF" checkpoint
+```
+
+Append one line of prose to the note first if anything is still outstanding —
+review comments expected, CI still running, a follow-up already known.
 
 (Hotfix: swap `repo.base_branch` → `repo.prod_branch` so the PR targets prod.)
 

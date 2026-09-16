@@ -35,13 +35,29 @@ PR, never touches the tracker — that's `cleanup` and `release`.
 keys this skill uses. No `dev-workflow.yml` → the preamble says so and the script's
 own defaults (trunk `dev`, prod `main`) take over.
 
+**Set `DW_ROOT` before the preamble — on EVERY harness, Claude Code included.**
+Neither Claude Code nor Codex exports a plugin-root variable into a skill's
+shell, so without this the preamble cannot find the framework and falls through
+to a relative path that does not exist in a target repo. Export `DW_ROOT` as the
+absolute directory **two levels above this SKILL.md file** — write the path out
+in full, quoted, from the location your harness showed you. Examples:
+`export DW_ROOT="$HOME/.claude/plugins/cache/dev-workflow/dev-workflow/<version>"`
+or `export DW_ROOT="$HOME/.codex/plugins/cache/dev-workflow/dev-workflow/<version>"`.
+Skip it ONLY when you are working from a framework checkout, where the
+relative fallback is the correct answer.
+
 ```bash
+if uv run python3 -c pass >/dev/null 2>&1; then PY="uv run"; else PY="python3"; fi                  # uv is unusable where its cache is unwritable (a Codex sandbox)
 if command -v dw-config >/dev/null 2>&1 && dw-config 2>&1 | grep -q -- '--batch'; then DW="dw-config"   # hardened install (PATH), only if --batch-capable
-elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then DW="uv run ${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py" # plugin install
-else DW="uv run dev-workflow/dw-config.py"; fi                                                          # framework checkout
-[ -f dev-workflow.yml ] \
-  && $DW dev-workflow.yml --batch repo.base_branch repo.prod_branch quality.bootstrap \
-  || echo "no dev-workflow.yml — the script falls back to its dev/main defaults"
+elif [ -f "${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py" ]; then DW="$PY ${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py"  # plugin install — test the FILE: the harness substitutes the path but not the guard
+elif [ -f "${DW_ROOT}/dev-workflow/dw-config.py" ]; then DW="$PY ${DW_ROOT}/dev-workflow/dw-config.py"                        # plugin install (other harness)
+else DW="$PY dev-workflow/dw-config.py"; fi                                                          # framework checkout
+if [ -f dev-workflow.yml ]; then
+  eval "$DW dev-workflow.yml --batch repo.base_branch repo.prod_branch quality.bootstrap" \
+    || echo "ERROR: dev-workflow.yml exists but could not be read — STOP. Do NOT fall back to defaults; a wrong base branch can open a PR into prod."
+else
+  echo "no dev-workflow.yml — using the skill's missing-config fallbacks"
+fi
 ```
 
 - `repo.base_branch` — the integration trunk; feature branches start here and PR
@@ -55,8 +71,9 @@ else DW="uv run dev-workflow/dw-config.py"; fi                                  
 whole branch model follows this repo's names (never assume `dev`/`main`):
 
 ```bash
-# script path: plugin install first, framework-checkout fallback second
-WT="${CLAUDE_PLUGIN_ROOT:+$CLAUDE_PLUGIN_ROOT/}dev-process/scripts/worktree-reset.sh"
+# script path: Claude plugin root, then DW_ROOT (other harness), then checkout
+WT_ROOT="${CLAUDE_PLUGIN_ROOT:-${DW_ROOT:-}}"
+WT="${WT_ROOT:+$WT_ROOT/}dev-process/scripts/worktree-reset.sh"
 [ -f "$WT" ] || WT="dev-process/scripts/worktree-reset.sh"
 WORKTREE_TRUNK="<repo.base_branch>" WORKTREE_PROD="<repo.prod_branch>" \
   WORKTREE_DEPS_CMD="<quality.bootstrap>" bash "$WT" [args]
