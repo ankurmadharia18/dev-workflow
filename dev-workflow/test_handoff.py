@@ -360,26 +360,52 @@ class WiringTests(unittest.TestCase):
             body,
         )
 
+    # The two tests below pinned the ladder's exact text, which in v0.6.11 was
+    # `HANDOFF="${CLAUDE_PLUGIN_ROOT:-${DW_ROOT:-.}}/..."` -- a VARIABLE test.
+    # In the runner container CLAUDE_PLUGIN_ROOT is set but carries no
+    # dev-workflow/, so that form resolved to a missing file. They now pin the
+    # file-guarded form. Behavioural coverage of the ladder itself (each rung,
+    # the fall-through, the no-match case) lives in
+    # skills/test_handoff_ladder.sh, which executes the shipped snippet.
+    def _assert_file_guarded_ladder(self, body, where):
+        for rung in (
+            '"${CLAUDE_PLUGIN_ROOT:-/nonexistent}/dev-workflow/handoff.py"',
+            '"${DW_ROOT:-/nonexistent}/dev-workflow/handoff.py"',
+            '"dev-workflow/handoff.py"',
+        ):
+            self.assertIn(rung, body, f"{where}: missing ladder rung {rung}")
+        self.assertIn('[ -f "$C" ] && { HANDOFF="$C"; break; }', body, where)
+        # The v0.6.11 bug must not come back.
+        self.assertNotIn(
+            'HANDOFF="${CLAUDE_PLUGIN_ROOT:-${DW_ROOT:-.}}/dev-workflow/handoff.py"',
+            body,
+            f"{where}: resolves $HANDOFF from the variable, not the file",
+        )
+
     def test_standup_reads_the_handoff(self):
         body = self._repo_file("skills/standup/SKILL.md")
         self.assertIn("handoff.py show", body)
         # Prove the wiring is executable, not just mentioned in prose: the
         # ladder assignment and the actual invocation must both survive.
-        self.assertIn(
-            'HANDOFF="${CLAUDE_PLUGIN_ROOT:-${DW_ROOT:-.}}/dev-workflow/handoff.py"',
-            body,
-        )
-        self.assertIn('python3 "$HANDOFF" show', body)
+        self._assert_file_guarded_ladder(body, "standup")
+        self.assertIn('[ -n "$HANDOFF" ] && python3 "$HANDOFF" show', body)
 
     def test_cleanup_writes_a_checkpoint(self):
         body = self._repo_file("skills/cleanup/SKILL.md")
         self.assertIn("handoff.py checkpoint", body)
         # Same executable-wiring proof as standup, for the checkpoint verb.
+        self._assert_file_guarded_ladder(body, "cleanup")
+        self.assertIn('[ -n "$HANDOFF" ] && python3 "$HANDOFF" checkpoint', body)
+
+    def test_image_ships_handoff_where_the_skills_look(self):
+        # rung 1 resolves to $CLAUDE_PLUGIN_ROOT/dev-workflow/handoff.py, and in
+        # the runner that root is /opt/dev-workflow/plugin. The Dockerfile's
+        # bin/ copy is FLAT, so the plugin root needs its own nested copy.
+        body = self._repo_file("skills/ticket-loop/docker/Dockerfile")
         self.assertIn(
-            'HANDOFF="${CLAUDE_PLUGIN_ROOT:-${DW_ROOT:-.}}/dev-workflow/handoff.py"',
+            "COPY dev-workflow/handoff.py /opt/dev-workflow/plugin/dev-workflow/",
             body,
         )
-        self.assertIn('python3 "$HANDOFF" checkpoint', body)
 
 
 if __name__ == "__main__":

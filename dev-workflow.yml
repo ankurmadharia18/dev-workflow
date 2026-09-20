@@ -25,7 +25,7 @@ tracker:
 # No unified test runner in-repo — run the stdlib unittest suites + the offline
 # smoke test (mirrors CLAUDE.md's `python3 <file>` idiom). No {pkgs} split.
 quality:
-  test: "python3 dev-workflow/test_validate.py && python3 dev-workflow/test_queue_count.py && python3 dev-workflow/test_dw_config.py && python3 skills/ticket-loop/orchestrator/test_orch.py && python3 skills/ticket-loop/test_telegram.py && bash skills/ticket-loop/orchestrator/test_orchestrator_smoke.sh"
+  test: "python3 dev-workflow/test_validate.py && python3 dev-workflow/test_queue_count.py && python3 dev-workflow/test_dw_config.py && python3 dev-workflow/test_handoff.py && python3 skills/ticket-loop/orchestrator/test_orch.py && python3 skills/ticket-loop/test_telegram.py && bash skills/test_root_ladder.sh && bash skills/test_harness_guard.sh && bash skills/test_handoff_ladder.sh && bash skills/ticket-loop/orchestrator/test_orchestrator_smoke.sh"
   lint: "python3 -m py_compile dev-workflow/*.py skills/ticket-loop/*.py skills/ticket-loop/orchestrator/*.py"
 
 # Versioning + changelog for /release. The version string's declared spots live
