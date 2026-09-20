@@ -78,8 +78,18 @@ board:
                                             # resolver so a plain plugin user resolves it too:
                                             #   snapshot: >-
                                             #     command -v dw-board >/dev/null 2>&1 && dw-board snapshot ||
-                                            #     { [ -n "$CLAUDE_PLUGIN_ROOT" ] && uv run "$CLAUDE_PLUGIN_ROOT/dev-workflow/dw-board.py" snapshot ||
-                                            #     uv run dev-workflow/dw-board.py snapshot; }
+                                            #     { [ -f "$CLAUDE_PLUGIN_ROOT/dev-workflow/dw-board.py" ] && $PY "$CLAUDE_PLUGIN_ROOT/dev-workflow/dw-board.py" snapshot ||
+                                            #     [ -f "$DW_ROOT/dev-workflow/dw-board.py" ] && $PY "$DW_ROOT/dev-workflow/dw-board.py" snapshot ||
+                                            #     $PY dev-workflow/dw-board.py snapshot; }
+                                            # Prefix it with the same uv probe the skills use:
+                                            #   if uv run python3 -c pass >/dev/null 2>&1; then PY="uv run"; else PY="python3"; fi;
+                                            # Test the FILE, not the variable: no harness exports a
+                                            # plugin-root variable into a skill's shell, and uv is
+                                            # unusable where its cache is unwritable (a Codex sandbox).
+                                            # The $DW_ROOT rung matters on Codex, which sets no
+                                            # plugin-root variable: without it this falls through to
+                                            # the checkout-relative path, which does not exist in a
+                                            # target repo, and the snapshot fails to spawn.
   views: ".local/board"                     # where dw-board renders its throwaway markdown views
                                             # (also the default home of import.json for `dw-board import`)
   gates: [publifai, launch, migrate]        # ordered gate-label precedence — one <gate>.md view each.

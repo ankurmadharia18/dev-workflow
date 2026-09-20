@@ -54,14 +54,29 @@ key this skill uses; the list below explains each. (`release` still refuses unle
 `repo.prod_branch` and `deploy.trigger` both come back set — see the safety rules
 above.)
 
+**Set `DW_ROOT` before the preamble — on EVERY harness, Claude Code included.**
+Neither Claude Code nor Codex exports a plugin-root variable into a skill's
+shell, so without this the preamble cannot find the framework and falls through
+to a relative path that does not exist in a target repo. Export `DW_ROOT` as the
+absolute directory **two levels above this SKILL.md file** — write the path out
+in full, quoted, from the location your harness showed you. Examples:
+`export DW_ROOT="$HOME/.claude/plugins/cache/dev-workflow/dev-workflow/<version>"`
+or `export DW_ROOT="$HOME/.codex/plugins/cache/dev-workflow/dev-workflow/<version>"`.
+Skip it ONLY when you are working from a framework checkout, where the
+relative fallback is the correct answer.
+
 ```bash
+if uv run python3 -c pass >/dev/null 2>&1; then PY="uv run"; else PY="python3"; fi                  # uv is unusable where its cache is unwritable (a Codex sandbox)
 if command -v dw-config >/dev/null 2>&1 && dw-config 2>&1 | grep -q -- '--batch'; then DW="dw-config"   # hardened install (PATH), only if --batch-capable
-elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then DW="uv run ${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py" # plugin install
-else DW="uv run dev-workflow/dw-config.py"; fi                                                          # framework checkout
-[ -f dev-workflow.yml ] \
-  && $DW dev-workflow.yml --batch repo.base_branch repo.prod_branch deploy.trigger deploy.announce \
-       version.file version.scheme version.changelog quality.test \
-  || echo "no dev-workflow.yml — STOP: release needs prod_branch + deploy.trigger configured"
+elif [ -f "${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py" ]; then DW="$PY ${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py"  # plugin install — test the FILE: the harness substitutes the path but not the guard
+elif [ -f "${DW_ROOT}/dev-workflow/dw-config.py" ]; then DW="$PY ${DW_ROOT}/dev-workflow/dw-config.py"                        # plugin install (other harness)
+else DW="$PY dev-workflow/dw-config.py"; fi                                                          # framework checkout
+if [ -f dev-workflow.yml ]; then
+  eval "$DW dev-workflow.yml --batch repo.base_branch repo.prod_branch deploy.trigger deploy.announce version.file version.scheme version.changelog quality.test" \
+    || echo "ERROR: dev-workflow.yml exists but could not be read — STOP. Do NOT fall back to defaults; a wrong base branch can open a PR into prod."
+else
+  echo "no dev-workflow.yml — using the skill's missing-config fallbacks"
+fi
 ```
 
 - `repo.base_branch` — the trunk you release *from*. `repo.prod_branch` — the prod
@@ -203,7 +218,8 @@ Merging is the human's call. Once it's merged — they tell you, or you confirm 
 ```bash
 dw-telegram send "🚀 Released v<new> — <one-line theme>. <3-6 highlight bullets>"
 # fallbacks when the symlink isn't installed:
-#   python3 "${CLAUDE_PLUGIN_ROOT}/skills/ticket-loop/telegram.py" send "…"   (plugin install)
+#   python3 "${CLAUDE_PLUGIN_ROOT}/skills/ticket-loop/telegram.py" send "…"   (plugin install, Claude Code)
+#   python3 "${DW_ROOT}/skills/ticket-loop/telegram.py" send "…"              (plugin install, other harness)
 #   python3 /opt/dev-workflow/bin/telegram.py send "…"                        (hardened /opt, or the framework clone's copy)
 ```
 

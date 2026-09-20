@@ -1,9 +1,13 @@
 # AGENTS.md
 
+This is the canonical instruction file for this repo. Every agent reads it —
+Codex and others natively, Claude Code through the one-line `CLAUDE.md` that
+imports it. Edit this file, never a copy.
+
 ## Project Overview
 
 `dev-workflow` is the framework — **CI, but for ticket work.** A generic runner +
-Codex plugin read one per-repo `dev-workflow.yml` and work your board
+Claude Code plugin read one per-repo `dev-workflow.yml` and work your board
 (pick up tickets, ask questions in team chat, open one reviewable PR each)
 inside guardrails a repo can tighten but never loosen. The framework leads;
 the original standalone AI-prompt collections (context files, audits,
@@ -21,7 +25,7 @@ dev-workflow/
 │   ├── queue-count.py       # Linear queue-depth pre-check (queue_count verb)
 │   ├── test_validate.py     # unittest for validate.py
 │   └── tracker-adapters.md  # canonical verbs → provider mapping (Linear impl)
-├── skills/                  # Codex plugin skills — setup, worktree, standup, cleanup, release, ticket-loop
+├── skills/                  # Claude Code plugin skills — setup, worktree, standup, cleanup, release, ticket-loop
 │   ├── setup/  worktree/  standup/  cleanup/  release/  # session skills, driven by dev-workflow.yml
 │                            #   (worktree = the branch/slot skill over dev-process/scripts/worktree-reset.sh)
 │   └── ticket-loop/         # autonomous agent + docker/ runner packaging
@@ -69,3 +73,71 @@ dev-workflow/
   validator has a `test_validate.py` (`python3 dev-workflow/test_validate.py`);
   the orchestrator brain and pre-check have `skills/ticket-loop/orchestrator/test_orch.py`
   and `dev-workflow/test_queue_count.py` (same `python3 <file>` idiom)
+- The `skills/*/SKILL.md` root ladder and harness guard (Codex support) have
+  their own tests: `bash skills/test_root_ladder.sh` and
+  `bash skills/test_harness_guard.sh`. Every test command is listed once, under
+  *Tests* below
+
+## Harness support
+
+The plugin runs on Claude Code and the Codex CLI. Both load the same skills from
+`.claude-plugin/`, and both fire the SessionStart hook.
+
+| | Claude Code | Codex CLI |
+|---|---|---|
+| Skills | yes | yes |
+| How you invoke one | `/standup` | **ask for it** — `run the dev-workflow:standup skill`. Codex's `/` namespace is its own built-ins; there is no prompts directory to register skills into |
+| SessionStart brief | yes | yes — Codex finds `hooks/hooks.json` by path |
+| `CLAUDE_PLUGIN_ROOT` in a skill's shell | **unset** | **unset** |
+| Resolving the framework | set `DW_ROOT` | set `DW_ROOT` — identical on both |
+| `/ticket-loop`, `/ticket-loop-parent` | yes | refuse — they need `claude -p` and Claude subagents |
+
+Notes that cost time to rediscover:
+
+- **`DW_ROOT`, on both harnesses.** Neither Claude Code nor Codex exports a
+  plugin-root variable into a skill's shell. Each skill's preamble tells you to
+  set `DW_ROOT` to the directory two levels above its SKILL.md. Do it before
+  running the preamble — skipping it on Claude Code leaves the preamble falling
+  through to a relative path that does not exist in a target repo.
+- **The manifest takes no `hooks` key.** Codex's plugin validator rejects it. The
+  hook still runs, because Codex discovers `hooks/hooks.json` by path and expands
+  `${CLAUDE_PLUGIN_ROOT}` inside the hook command — a template token, not the
+  shell variable a skill sees.
+- **Reinstall to pick up edits.** `codex plugin add dev-workflow@dev-workflow`,
+  then start a new thread. `codex plugin marketplace upgrade` refreshes Git
+  marketplaces only, not local ones.
+
+## Handing off between agents
+
+When a session limit forces a switch between Claude Code and Codex, the next
+agent needs the reasoning this one has. Git and the tracker already carry the
+commits and the ticket state; they do not carry why.
+
+**At the start of a session**, run the helper (`handoff.py show`) and read what
+it prints:
+
+    python3 "$HANDOFF" show
+
+**Before you stop, and at each real decision**, append plain Markdown to the
+note — what you are doing, what you decided and why, what is next, what is
+blocked — then record the git state (`handoff.py checkpoint`):
+
+    python3 "$HANDOFF" checkpoint
+
+Write the note for a reader with none of your context. Prose, not a format:
+nothing parses it.
+
+Resolve `$HANDOFF` the way the skills resolve `dw-config.py` — try
+`$CLAUDE_PLUGIN_ROOT/dev-workflow/handoff.py`, then
+`$DW_ROOT/dev-workflow/handoff.py`, then `dev-workflow/handoff.py` from a
+framework checkout. `python3 "$HANDOFF" path` prints the note's location.
+
+## Tests
+
+Run each file directly:
+
+- `python3 dev-workflow/test_validate.py`
+- `python3 dev-workflow/test_queue_count.py`
+- `python3 skills/ticket-loop/orchestrator/test_orch.py`
+- `bash skills/test_root_ladder.sh`
+- `bash skills/test_harness_guard.sh`

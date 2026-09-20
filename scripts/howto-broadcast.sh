@@ -11,6 +11,10 @@
 #   scripts/howto-broadcast.sh --pin           # also pin (bot must be group admin;
 #                                              #   best-effort — pin by hand otherwise)
 #   scripts/howto-broadcast.sh .local/rasa-agent.env   # explicit env file(s) only
+#   scripts/howto-broadcast.sh --howto FILE …  # send FILE instead of the generic
+#                                              #   how-to (e.g. PubX Data's custom
+#                                              #   .local/pubx-data-howto.md — pair it
+#                                              #   with that group's env file)
 #
 # Each env file must provide TELEGRAM_BOT_TOKEN + AGENT_TELEGRAM_CHAT_ID
 # (the same contract telegram.py uses). Secrets are sourced per-subshell and
@@ -22,18 +26,25 @@ HOWTO="$ROOT/skills/ticket-loop/telegram-howto.md"
 VERSION="$(jq -r .version "$ROOT/.claude-plugin/plugin.json" 2>/dev/null || echo unknown)"
 
 # pubx-analytics is DELIBERATELY not a default: its group ("PubX Data") carries a
-# custom data-flavored pinned how-to (2026-08-19) — broadcasting the generic text
-# there with --pin would clobber it. Update that pin by hand when the flow changes.
+# custom data-flavored pinned how-to — broadcasting the generic text there with
+# --pin would clobber it. Its text lives in .local/pubx-data-howto.md; after
+# updating it, send with:
+#   scripts/howto-broadcast.sh --pin --howto .local/pubx-data-howto.md .local/pubx-analytics-agent.env
 DEFAULT_ENVS=(.local/niptao-agent.env .local/rasa-agent.env .local/pubx-hq-agent.env)
 
-DRY=0 PIN=0 ENVS=()
+DRY=0 PIN=0 ENVS=() WANT_HOWTO=0
 for a in "$@"; do
+  if [ "$WANT_HOWTO" = 1 ]; then HOWTO="$a"; WANT_HOWTO=0; continue; fi
   case "$a" in
     --dry-run) DRY=1 ;;
     --pin)     PIN=1 ;;
+    --howto)   WANT_HOWTO=1 ;;
+    --howto=*) HOWTO="${a#--howto=}" ;;
     *)         ENVS+=("$a") ;;
   esac
 done
+[ "$WANT_HOWTO" = 1 ] && { echo "--howto needs a FILE" >&2; exit 2; }
+case "$HOWTO" in /*) ;; *) [ -f "$HOWTO" ] || HOWTO="$ROOT/$HOWTO" ;; esac
 [ "${#ENVS[@]}" -eq 0 ] && ENVS=("${DEFAULT_ENVS[@]}")
 [ -f "$HOWTO" ] || { echo "missing $HOWTO" >&2; exit 2; }
 

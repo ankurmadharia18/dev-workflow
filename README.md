@@ -38,8 +38,9 @@ the [dev-process playbook](dev-process/README.md).
 
 ## 1. Quickstart
 
-**You need:** [Claude Code](https://docs.anthropic.com/en/docs/claude-code) with
-your tracker connected (Linear's MCP, or a `LINEAR_API_KEY` for the headless
+**You need:** [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or the
+[Codex CLI](https://developers.openai.com/codex/cli) (0.151+), with your tracker
+connected (Linear's MCP, or a `LINEAR_API_KEY` for the headless
 loop). Only for the autonomous loop and release announcements: a Telegram bot
 token + group chat id, and a GitHub token for PRs — all injected via env vars,
 enumerated in [`skills/ticket-loop/env.example`](skills/ticket-loop/env.example).
@@ -60,16 +61,51 @@ enumerated in [`skills/ticket-loop/env.example`](skills/ticket-loop/env.example)
    claude --plugin-dir <path-to-this-clone>
    ```
 
+   On the Codex CLI, the same repo installs as a Codex plugin:
+
+   ```
+   codex plugin marketplace add singlas/dev-workflow
+   codex plugin add dev-workflow@dev-workflow
+   ```
+
+   Two differences on Codex. **You invoke a skill by asking for it, not with a
+   slash command** — Codex's `/` namespace holds its own built-ins, so `/standup`
+   is not recognised there. Say `run the dev-workflow:standup skill` instead. And
+   the autonomous tiers (`ticket-loop`, `ticket-loop-parent`) refuse to run —
+   they need `claude -p` and Claude subagents. Everything else, the session brief
+   included, behaves the same on both.
+
+   Developing against a **local** marketplace: `codex plugin marketplace upgrade`
+   refreshes Git marketplaces only. To pick up an edit to a local clone, re-run
+   `codex plugin add dev-workflow@dev-workflow` and start a new thread.
+
    It provides `/setup`, `/worktree`, `/standup`, `/cleanup`, `/release`,
-   `/ticket-loop`, and `/blog-from-session`. Opening a session in a repo that already has a
-   `dev-workflow.yml` auto-orients you (a SessionStart hook injects a short brief;
-   it stays silent in every repo without one).
+   `/ticket-loop`, and `/blog-from-session`. Opening a session in a repo that
+   already has a `dev-workflow.yml` auto-orients you on **both** harnesses — a
+   SessionStart hook injects a short brief, and it stays silent in every repo
+   without one. Codex finds `hooks/hooks.json` by path, without a `hooks` key in
+   the plugin manifest (its validator rejects that key), and expands
+   `${CLAUDE_PLUGIN_ROOT}` inside the hook command even though it never exports
+   that variable to a skill's shell.
 
 2. **Add a config.** Run `/setup` — it checks prereqs and interviews you for the
    required values, writing a validated `dev-workflow.yml`. Or copy
    [`dev-workflow.example.yml`](dev-workflow/dev-workflow.example.yml) to your
    repo root by hand and edit the values (branch model, tracker team/roles,
    test/lint commands, tightened guardrails).
+
+   **Make `AGENTS.md` your repo's canonical instruction file.** Codex and most
+   other agents read `AGENTS.md`; Claude Code reads `CLAUDE.md`. Keep the content
+   in `AGENTS.md` and make `CLAUDE.md` a one-line import, so the two can never
+   drift:
+
+   ```
+   echo '@AGENTS.md' > CLAUDE.md
+   ```
+
+   A repo that has only a `CLAUDE.md` gives a Codex user the skills but none of
+   its own conventions. This repo does exactly what it recommends — see its
+   [`AGENTS.md`](AGENTS.md) and [`CLAUDE.md`](CLAUDE.md).
 
 3. **Validate it.** `/setup` already validates what it writes. If you edited the
    config by hand, run the validator yourself — from your repo root, pointing at

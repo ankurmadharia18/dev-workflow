@@ -31,14 +31,29 @@ Everything repo-specific comes from `dev-workflow.yml` at the target-repo root.
 key this skill uses; the list below explains each. No `dev-workflow.yml` → the
 preamble says so and the missing-config fallbacks in the procedure take over.
 
+**Set `DW_ROOT` before the preamble — on EVERY harness, Claude Code included.**
+Neither Claude Code nor Codex exports a plugin-root variable into a skill's
+shell, so without this the preamble cannot find the framework and falls through
+to a relative path that does not exist in a target repo. Export `DW_ROOT` as the
+absolute directory **two levels above this SKILL.md file** — write the path out
+in full, quoted, from the location your harness showed you. Examples:
+`export DW_ROOT="$HOME/.claude/plugins/cache/dev-workflow/dev-workflow/<version>"`
+or `export DW_ROOT="$HOME/.codex/plugins/cache/dev-workflow/dev-workflow/<version>"`.
+Skip it ONLY when you are working from a framework checkout, where the
+relative fallback is the correct answer.
+
 ```bash
+if uv run python3 -c pass >/dev/null 2>&1; then PY="uv run"; else PY="python3"; fi                  # uv is unusable where its cache is unwritable (a Codex sandbox)
 if command -v dw-config >/dev/null 2>&1 && dw-config 2>&1 | grep -q -- '--batch'; then DW="dw-config"   # hardened install (PATH), only if --batch-capable
-elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then DW="uv run ${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py" # plugin install
-else DW="uv run dev-workflow/dw-config.py"; fi                                                          # framework checkout
-[ -f dev-workflow.yml ] \
-  && $DW dev-workflow.yml --batch board.snapshot board.views tracker.team tracker.project= tracker.ticket_prefix \
-       tracker.roles.exclude.labels tracker.roles.queue.states \
-  || echo "no dev-workflow.yml — using the skill's missing-config fallbacks"
+elif [ -f "${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py" ]; then DW="$PY ${CLAUDE_PLUGIN_ROOT}/dev-workflow/dw-config.py"  # plugin install — test the FILE: the harness substitutes the path but not the guard
+elif [ -f "${DW_ROOT}/dev-workflow/dw-config.py" ]; then DW="$PY ${DW_ROOT}/dev-workflow/dw-config.py"                        # plugin install (other harness)
+else DW="$PY dev-workflow/dw-config.py"; fi                                                          # framework checkout
+if [ -f dev-workflow.yml ]; then
+  eval "$DW dev-workflow.yml --batch board.snapshot board.views tracker.team tracker.project= tracker.ticket_prefix tracker.roles.exclude.labels tracker.roles.queue.states" \
+    || echo "ERROR: dev-workflow.yml exists but could not be read — STOP. Do NOT fall back to defaults; a wrong base branch can open a PR into prod."
+else
+  echo "no dev-workflow.yml — using the skill's missing-config fallbacks"
+fi
 ```
 
 Never hardcode a team, label, state, or command:
@@ -114,6 +129,20 @@ give the spread and let them choose.
 Before recommending a specific ticket, read its body with `get_ticket` so the
 *why* is real (acceptance criteria, the blocker) — not just the title from the
 snapshot.
+
+### Read the handoff first
+
+Before the board, check whether the previous session left a note by running
+`handoff.py show`:
+
+```bash
+HANDOFF="${CLAUDE_PLUGIN_ROOT:-${DW_ROOT:-.}}/dev-workflow/handoff.py"
+python3 "$HANDOFF" show
+```
+
+If it prints a note, summarise it in one or two lines at the top of the brief —
+what was in flight and what is next — and say plainly how far the checkpoint sits
+from HEAD. If it prints `no handoff for …`, say nothing about it.
 
 ## Output — a tight brief, not a wall
 
