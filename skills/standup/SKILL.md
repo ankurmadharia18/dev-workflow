@@ -136,9 +136,19 @@ Before the board, check whether the previous session left a note by running
 `handoff.py show`:
 
 ```bash
-HANDOFF="${CLAUDE_PLUGIN_ROOT:-${DW_ROOT:-.}}/dev-workflow/handoff.py"
-python3 "$HANDOFF" show
+HANDOFF=""
+for C in "${CLAUDE_PLUGIN_ROOT:-/nonexistent}/dev-workflow/handoff.py" \
+         "${DW_ROOT:-/nonexistent}/dev-workflow/handoff.py" \
+         "dev-workflow/handoff.py"; do
+  [ -f "$C" ] && { HANDOFF="$C"; break; }
+done
+[ -n "$HANDOFF" ] && python3 "$HANDOFF" show
 ```
+
+Test the FILE, not the variable: a set-but-wrong root (the container sets
+`CLAUDE_PLUGIN_ROOT` to a plugin copy that carries no `dev-workflow/`) must fall
+through to the next rung, not resolve to a path that does not exist. If no rung
+matches, say nothing about the handoff and go straight to the board.
 
 If it prints a note, summarise it in one or two lines at the top of the brief —
 what was in flight and what is next — and say plainly how far the checkpoint sits

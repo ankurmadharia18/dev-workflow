@@ -97,6 +97,11 @@ COPY dev-workflow/dw-config.py dev-workflow/queue-count.py /opt/dev-workflow/bin
 # The plugin (for --plugin-dir): a copy of the plugin manifest + all skills.
 COPY .claude-plugin/ /opt/dev-workflow/plugin/.claude-plugin/
 COPY skills/ /opt/dev-workflow/plugin/skills/
+# Framework helpers the SKILLS resolve as "$CLAUDE_PLUGIN_ROOT/dev-workflow/<x>"
+# — a nested layout, unlike the flat bin/ copy above, so they need their own copy
+# under the plugin root. standup + cleanup call handoff.py this way; without it
+# the path resolves inside the container to a file that does not exist.
+COPY dev-workflow/handoff.py /opt/dev-workflow/plugin/dev-workflow/
 # The keyed tracker MCP config the runner passes via TICKET_LOOP_MCP_CONFIG.
 COPY skills/ticket-loop/docker/loop-mcp.json /opt/dev-workflow/loop-mcp.json
 # PATH-visible Telegram bridge (same public CLI the --opt native install exposes).

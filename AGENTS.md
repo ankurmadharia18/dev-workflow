@@ -130,7 +130,10 @@ nothing parses it.
 Resolve `$HANDOFF` the way the skills resolve `dw-config.py` — try
 `$CLAUDE_PLUGIN_ROOT/dev-workflow/handoff.py`, then
 `$DW_ROOT/dev-workflow/handoff.py`, then `dev-workflow/handoff.py` from a
-framework checkout. `python3 "$HANDOFF" path` prints the note's location.
+framework checkout. Test the FILE at each rung, not the variable: a root that is
+set but carries no `dev-workflow/` must fall through to the next rung. Skip the
+handoff when no rung matches — it never fails the session.
+`python3 "$HANDOFF" path` prints the note's location.
 
 ## Tests
 
