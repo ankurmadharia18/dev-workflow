@@ -208,9 +208,19 @@ Record a checkpoint (`handoff.py checkpoint`) so a session resuming on this
 branch knows where the PR got to:
 
 ```bash
-HANDOFF="${CLAUDE_PLUGIN_ROOT:-${DW_ROOT:-.}}/dev-workflow/handoff.py"
-python3 "$HANDOFF" checkpoint
+HANDOFF=""
+for C in "${CLAUDE_PLUGIN_ROOT:-/nonexistent}/dev-workflow/handoff.py" \
+         "${DW_ROOT:-/nonexistent}/dev-workflow/handoff.py" \
+         "dev-workflow/handoff.py"; do
+  [ -f "$C" ] && { HANDOFF="$C"; break; }
+done
+[ -n "$HANDOFF" ] && python3 "$HANDOFF" checkpoint
 ```
+
+Test the FILE, not the variable: a set-but-wrong root (the container sets
+`CLAUDE_PLUGIN_ROOT` to a plugin copy that carries no `dev-workflow/`) must fall
+through to the next rung, not resolve to a path that does not exist. If no rung
+matches, skip the checkpoint — never fail the ship over it.
 
 Append one line of prose to the note first if anything is still outstanding —
 review comments expected, CI still running, a follow-up already known.
