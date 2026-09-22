@@ -50,9 +50,14 @@ class ValidateTests(unittest.TestCase):
 
     def test_cap_per_pass_over_ceiling_fails(self):
         cfg = copy.deepcopy(MINIMAL)
-        cfg["build"] = {"cap_per_pass": 3}
+        cfg["build"] = {"cap_per_pass": 4}
         errors = _errors_for(cfg)
         self.assertTrue(any("cap_per_pass" in e for e in errors), errors)
+
+    def test_cap_per_pass_three_passes(self):
+        cfg = copy.deepcopy(MINIMAL)
+        cfg["build"] = {"cap_per_pass": 3}
+        self.assertEqual(_errors_for(cfg), [])
 
     def test_build_model_fields_accept_strings(self):
         cfg = copy.deepcopy(MINIMAL)
@@ -77,6 +82,28 @@ class ValidateTests(unittest.TestCase):
         del cfg["tracker"]["team"]
         errors = _errors_for(cfg)
         self.assertTrue(any("tracker.team" in e for e in errors), errors)
+
+    def test_github_tracker_valid_passes(self):
+        cfg = copy.deepcopy(MINIMAL)
+        cfg["tracker"] = {
+            "provider": "github",
+            "repo": "ankurmadharia18/super-singularity",
+        }
+        self.assertEqual(_errors_for(cfg), [])
+
+    def test_github_tracker_requires_repo(self):
+        cfg = copy.deepcopy(MINIMAL)
+        cfg["tracker"] = {"provider": "github"}
+        errors = _errors_for(cfg)
+        self.assertTrue(any("tracker.repo" in e for e in errors), errors)
+
+    def test_github_tracker_does_not_require_linear_fields(self):
+        cfg = copy.deepcopy(MINIMAL)
+        cfg["tracker"] = {
+            "provider": "github",
+            "repo": "ankurmadharia18/super-singularity",
+        }
+        self.assertEqual(_errors_for(cfg), [])
 
     def test_tracker_project_optional_valid_passes(self):
         cfg = copy.deepcopy(MINIMAL)

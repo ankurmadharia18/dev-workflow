@@ -34,11 +34,11 @@ except ImportError:
 ALLOWED_TOP = {"repo", "tracker", "chat", "quality", "version", "deploy",
                "board", "guardrails", "build", "schedule", "hooks", "runtime",
                "blog", "agent", "repos", "notify"}
-REQUIRED = {"repo": ["base_branch", "prod_branch"], "tracker": ["provider", "team", "ticket_prefix"]}
+REQUIRED = {"repo": ["base_branch", "prod_branch"], "tracker": ["provider"]}
 BASELINE_OFF_LIMITS = [".env*", "*.key", "*.pem", "credentials.json",
                        ".claude/settings*", ".github/workflows/**"]
-CEILING = {"max_lines": 400, "max_files": 15, "cap_per_pass": 2}
-KNOWN_TRACKERS = {"linear"}
+CEILING = {"max_lines": 400, "max_files": 15, "cap_per_pass": 3}
+KNOWN_TRACKERS = {"github", "linear"}
 KNOWN_CHAT = {"telegram"}
 
 WINDOW_RE = re.compile(r"^\d{2}:\d{2}-\d{2}:\d{2}$")
@@ -92,6 +92,13 @@ def check(data):
                 "tracker.provider %r is not supported (known: %s)"
                 % (provider, ", ".join(sorted(KNOWN_TRACKERS)))
             )
+        if provider == "linear":
+            for field in ("team", "ticket_prefix"):
+                if not _nonempty_str(tracker.get(field)):
+                    errors.append("tracker.%s is required for the linear provider" % field)
+        elif provider == "github":
+            if not _nonempty_str(tracker.get("repo")):
+                errors.append("tracker.repo is required for the github provider")
         # tracker.project (optional) — a Linear Project scoping this repo inside a
         # team shared across repos. When present it must be a non-empty string.
         if "project" in tracker and not _nonempty_str(tracker.get("project")):
@@ -112,7 +119,7 @@ def check(data):
                         % (role, attr)
                     )
             # Optional roles (Epics C/D): when present, each needs a non-empty label.
-            for role in ("flagged", "dep_blocked"):
+            for role in ("claimed", "flagged", "dep_blocked"):
                 sub = roles.get(role)
                 if sub is not None and (not isinstance(sub, dict) or not _nonempty_str(sub.get("label"))):
                     errors.append(
@@ -183,7 +190,14 @@ def check(data):
         # model fields, when present, must be non-empty strings (any model id or
         # alias — the runner passes them through to `claude --model` / the Task
         # tool verbatim).
-        for field in ("model", "subagent_model"):
+        for field in (
+            "model",
+            "subagent_model",
+            "codex_model",
+            "codex_model_reasoning_effort",
+            "codex_subagent_model",
+            "codex_subagent_model_reasoning_effort",
+        ):
             if field in build and not _nonempty_str(build[field]):
                 errors.append("build.%s must be a non-empty string" % field)
 

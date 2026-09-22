@@ -16,7 +16,8 @@ repo:
 
 # The issue tracker — the adapter seam. See tracker-adapters.md for the verbs.
 tracker:
-  provider: linear                # linear is the only implementation today
+  provider: linear                # linear | github (GitHub Phase 1 is read-only planning)
+  # repo: your-org/your-repo      # REQUIRED when provider is github
   team: Acme                      # the tracker team/workspace name
   ticket_prefix: ABC              # ticket keys look like ABC-123
   # project: acme-api             # OPTIONAL: a Linear Project that scopes THIS repo
@@ -37,6 +38,7 @@ tracker:
                                   # (which stays unset in a parent config).
   roles:                          # map framework roles -> your board's own label/state names
     queue:   { label: agent, states: [Todo, In Progress] }   # the loop picks up work here
+    # claimed: { label: agent-claimed }                      # GitHub manual runner ownership
     blocked: { label: agent-blocked }                        # set when a ticket needs a human ANSWER
     exclude: { labels: [manual, gated, decision] }           # never auto-worked
     done:    { state: Done }                                  # set when the PR merges
@@ -111,7 +113,7 @@ guardrails:
     max_lines: 400
     max_files: 15
 
-# Build settings for each autonomous pass. cap_per_pass is tighten-only (<= 2).
+# Build settings for each autonomous pass. cap_per_pass is tighten-only (<= 3).
 #
 # Model selection is two-tier: `model` pins the headless pass itself (triage,
 # planning, PR-babysitting judgment — the thinking); `subagent_model` is what
@@ -124,7 +126,12 @@ guardrails:
 build:
   model: sonnet                  # model id the loop pins each headless pass to
   subagent_model: sonnet         # implementation subagents; omit = inherit `model`
-  cap_per_pass: 2                # max tickets built per loop pass
+  # Optional Codex manual-run profile (`dw-ticket-loop run --engine codex`):
+  # codex_model: gpt-6-astra
+  # codex_model_reasoning_effort: low
+  # codex_subagent_model: gpt-5.6-sol
+  # codex_subagent_model_reasoning_effort: medium
+  cap_per_pass: 3                # max tickets built per loop pass
 
 # v2 opt-in: the LOCAL autonomous agent tier (the `ticket-loop` skill + its
 # launchd/cron installer, `install-cron.sh`). OFF by default — omit this section
