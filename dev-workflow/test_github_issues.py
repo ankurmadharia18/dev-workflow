@@ -5,7 +5,9 @@ import unittest
 
 from github_issues import (
     GitHubAdapterError,
+    add_label,
     comment_issue,
+    get_issue,
     list_actionable,
     set_blocked,
     set_claimed,
@@ -57,6 +59,38 @@ class GitHubIssuesTests(unittest.TestCase):
 
         with self.assertRaisesRegex(GitHubAdapterError, "authentication failed"):
             list_actionable("acme/repo", "agent-ready", [], runner=runner)
+
+    def test_get_issue_reads_state_and_labels(self):
+        payload = {
+            "number": 42,
+            "title": "Fix it",
+            "url": "https://github.com/acme/repo/issues/42",
+            "createdAt": "2026-09-22T10:00:00Z",
+            "labels": [{"name": "security"}],
+            "state": "OPEN",
+        }
+
+        def runner(command, **kwargs):
+            self.assertEqual(command[:3], ["gh", "issue", "view"])
+            return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+        issue = get_issue("acme/repo", 42, runner=runner)
+        self.assertEqual(issue.number, 42)
+        self.assertEqual(issue.labels, ("security",))
+        self.assertEqual(issue.state, "OPEN")
+
+    def test_add_label_uses_configured_label(self):
+        captured = []
+
+        def runner(command, **kwargs):
+            captured.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        add_label("acme/repo", 42, "agent-ready", runner=runner)
+        self.assertEqual(captured[0][:3], ["gh", "issue", "edit"])
+        self.assertEqual(
+            captured[0][captured[0].index("--add-label") + 1], "agent-ready"
+        )
 
     def test_rejects_non_list_payload(self):
         def runner(command, **kwargs):

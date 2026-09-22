@@ -8,6 +8,7 @@ implementation to the configured Opus subagent, and never schedules itself.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import importlib.util
 import json
 import os
@@ -15,10 +16,13 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 
 from github_issues import (
     GitHubAdapterError,
+    add_label,
     comment_issue,
+    get_issue,
     list_actionable,
     set_blocked,
     set_claimed,
@@ -61,7 +65,11 @@ def _role(config: dict, path: tuple[str, ...], default):
     return value
 
 
-def _selection(config: dict, maximum: int):
+def _selection(
+    config: dict,
+    maximum: int,
+    requested_numbers: list[int] | None = None,
+):
     tracker = config.get("tracker", {})
     if tracker.get("provider") != "github":
         raise RuntimeError("dw-ticket-loop currently requires tracker.provider: github")
@@ -76,13 +84,25 @@ def _selection(config: dict, maximum: int):
         ("tracker", "roles", "exclude", "labels"),
         ["agent-claimed", "agent-blocked", "manual", "gated", "decision"],
     )
-    return github_repo, queue_label, list_actionable(
-        github_repo, queue_label, excludes
-    )[:maximum]
+    issues = list_actionable(github_repo, queue_label, excludes)
+    if requested_numbers:
+        requested = set(requested_numbers)
+        issues = [issue for issue in issues if issue.number in requested]
+        order = {number: index for index, number in enumerate(requested_numbers)}
+        issues.sort(key=lambda issue: order[issue.number])
+    return github_repo, queue_label, issues[:maximum]
 
 
-def _plan(repo_root: Path, config: dict, maximum: int, as_json: bool) -> int:
-    github_repo, _queue_label, issues = _selection(config, maximum)
+def _plan(
+    repo_root: Path,
+    config: dict,
+    maximum: int,
+    as_json: bool,
+    requested_numbers: list[int] | None = None,
+) -> int:
+    github_repo, _queue_label, issues = _selection(
+        config, maximum, requested_numbers
+    )
     if as_json:
         print(json.dumps([issue.__dict__ for issue in issues], indent=2))
     elif not issues:
@@ -222,51 +242,172 @@ def _telegram_runtime(repo_root: Path, config: dict) -> tuple[list[str], dict[st
     return [sys.executable, str(bridge)], env
 
 
+def _telegram_command(
+    bridge: list[str],
+    env: dict[str, str],
+    repo_root: Path,
+    arguments: list[str],
+) -> subprocess.CompletedProcess[str]:
+    state_dir = env.get("TICKET_LOOP_STATE_DIR")
+    lock_handle = None
+    if state_dir:
+        lock_path = Path(state_dir) / "bridge.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_handle = lock_path.open("a+")
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+    try:
+        completed = subprocess.run(
+            bridge + arguments,
+            cwd=repo_root,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        if lock_handle is not None:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+            lock_handle.close()
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "Telegram command failed: %s"
+            % (completed.stderr or completed.stdout or "unknown error").strip()
+        )
+    return completed
+
+
+def _open_telegram_questions(
+    bridge: list[str], env: dict[str, str], repo_root: Path
+) -> list[dict]:
+    completed = _telegram_command(
+        bridge, env, repo_root, ["questions", "--json"]
+    )
+    try:
+        payload = json.loads(completed.stdout or "[]")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Telegram question state is invalid") from exc
+    return payload if isinstance(payload, list) else []
+
+
+def _issue_number_from_message(message: dict) -> int | None:
+    ticket = str(message.get("ticket") or "")
+    match = re.fullmatch(r"SS-(\d+)", ticket)
+    if match:
+        return int(match.group(1))
+    quoted = str(message.get("reply_to_text") or "").splitlines()
+    if quoted:
+        match = re.search(r"(?:SS-|#)(\d+)\b", quoted[0], re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def _is_deferral(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", text.strip().lower())
+    phrases = (
+        "wait",
+        "hold",
+        "next week",
+        "later",
+        "not now",
+        "don't know",
+        "dont know",
+        "let me think",
+        "skip",
+        "pause",
+    )
+    return any(phrase in normalized for phrase in phrases)
+
+
+def _is_listener_command(text: str) -> bool:
+    first = text.strip().split(maxsplit=1)[0].lower() if text.strip() else ""
+    return first in {"start", "status", "pause", "resume", "models", "cancel"}
+
+
+def _send_telegram_text(
+    bridge: list[str],
+    env: dict[str, str],
+    repo_root: Path,
+    text: str,
+    *,
+    ticket: str | None = None,
+) -> None:
+    arguments = ["send"]
+    if ticket:
+        arguments.extend(["--ticket", ticket])
+    arguments.append(text)
+    _telegram_command(bridge, env, repo_root, arguments)
+
+
 def _poll_telegram_answers(
     repo_root: Path,
     config: dict,
     github_repo: str,
     blocked_label: str,
-) -> None:
+    *,
+    timeout: int = 0,
+) -> list[dict]:
     runtime = _telegram_runtime(repo_root, config)
     if runtime is None:
-        return
+        return []
     bridge, env = runtime
-    completed = subprocess.run(
-        bridge + ["poll", "--timeout", "0"],
-        cwd=repo_root,
-        env=env,
-        capture_output=True,
-        text=True,
+    questions = _open_telegram_questions(bridge, env, repo_root)
+    completed = _telegram_command(
+        bridge, env, repo_root, ["poll", "--timeout", str(timeout)]
     )
-    if completed.returncode != 0:
-        raise RuntimeError(
-            "Telegram poll failed: %s"
-            % (completed.stderr or completed.stdout or "unknown error").strip()
-        )
+    unhandled = []
     for line in completed.stdout.splitlines():
         if not line.strip():
             continue
         message = json.loads(line)
-        match = re.fullmatch(r"SS-(\d+)", str(message.get("ticket") or ""))
         text = str(message.get("text") or "").strip()
-        if not match or not text:
+        if not text:
             continue
-        issue_number = int(match.group(1))
+        if _is_listener_command(text):
+            unhandled.append(message)
+            continue
+        issue_number = _issue_number_from_message(message)
+        if (
+            issue_number is None
+            and len(questions) == 1
+        ):
+            only_ticket = str(questions[0].get("ticket") or "")
+            match = re.fullmatch(r"SS-(\d+)", only_ticket)
+            if match:
+                issue_number = int(match.group(1))
+        if issue_number is None:
+            unhandled.append(message)
+            continue
         comment_issue(
             github_repo,
             issue_number,
             "📩 Answer via Telegram: %s" % text,
         )
-        set_blocked(github_repo, issue_number, blocked_label, blocked=False)
-        subprocess.run(
-            bridge + ["questions", "--clear", "SS-%d" % issue_number],
-            cwd=repo_root,
-            env=env,
-            check=True,
-            capture_output=True,
-            text=True,
+        _telegram_command(
+            bridge,
+            env,
+            repo_root,
+            ["questions", "--clear", "SS-%d" % issue_number],
         )
+        if _is_deferral(text):
+            set_blocked(github_repo, issue_number, blocked_label, blocked=True)
+            _send_telegram_text(
+                bridge,
+                env,
+                repo_root,
+                "⏸️ SS-%d remains on hold — %s\n\nReply here when it is ready to continue."
+                % (issue_number, text),
+                ticket="SS-%d" % issue_number,
+            )
+        else:
+            set_blocked(github_repo, issue_number, blocked_label, blocked=False)
+            _send_telegram_text(
+                bridge,
+                env,
+                repo_root,
+                "👍 SS-%d answer recorded. The issue is ready for the next local pass."
+                % issue_number,
+            )
+    return unhandled
 
 
 def _send_telegram_question(
@@ -286,8 +427,11 @@ def _send_telegram_question(
         sections.append(summary.strip())
     sections.append("Decision needed:\n%s" % question.strip())
     if options:
+        def clean_option(option: str) -> str:
+            return re.sub(r"^[A-Z][.)]\s*", "", option.strip())
+
         option_lines = [
-            "• %s — %s" % (chr(ord("A") + index), option.strip())
+            "• %s — %s" % (chr(ord("A") + index), clean_option(option))
             for index, option in enumerate(options)
             if option.strip()
         ]
@@ -295,18 +439,12 @@ def _send_telegram_question(
             sections.append("Options:\n" + "\n".join(option_lines))
     sections.append("Reply directly to this message with your choice or answer.")
     text = "\n\n".join(sections)
-    completed = subprocess.run(
-        bridge + ["send", "--ticket", "SS-%d" % issue.number, text],
-        cwd=repo_root,
-        env=env,
-        capture_output=True,
-        text=True,
+    completed = _telegram_command(
+        bridge,
+        env,
+        repo_root,
+        ["send", "--ticket", "SS-%d" % issue.number, text],
     )
-    if completed.returncode != 0:
-        raise RuntimeError(
-            "Telegram question send failed: %s"
-            % (completed.stderr or completed.stdout or "unknown error").strip()
-        )
 
 
 def _outcome_schema() -> dict:
@@ -421,6 +559,7 @@ def _run_manual(
     implementer_model: str | None = None,
     ask_models: bool = False,
     input_fn=input,
+    requested_numbers: list[int] | None = None,
 ) -> int:
     if _role(config, ("agent", "enabled"), False) is not True:
         raise RuntimeError(
@@ -439,11 +578,14 @@ def _run_manual(
     blocked_label = _role(
         config, ("tracker", "roles", "blocked", "label"), "agent-blocked"
     )
-    _poll_telegram_answers(repo_root, config, github_repo, blocked_label)
+    if os.environ.get("DW_TELEGRAM_LISTENER_ACTIVE") != "1":
+        _poll_telegram_answers(repo_root, config, github_repo, blocked_label)
 
     configured_cap = _role(config, ("build", "cap_per_pass"), 1)
     execution_limit = min(maximum, configured_cap)
-    github_repo, queue_label, issues = _selection(config, execution_limit)
+    github_repo, queue_label, issues = _selection(
+        config, execution_limit, requested_numbers
+    )
     if not issues:
         print("No actionable GitHub issues found for %s." % github_repo)
         return 0
@@ -640,9 +782,361 @@ def _run_manual(
     return 0
 
 
+def _listener_state_path(repo_root: Path, config: dict) -> Path:
+    state_dir = repo_root / _role(
+        config, ("runtime", "state_dir"), ".local/agent-loop"
+    )
+    return state_dir / "listener.json"
+
+
+def _load_listener_state(repo_root: Path, config: dict) -> dict:
+    path = _listener_state_path(repo_root, config)
+    try:
+        payload = json.loads(path.read_text())
+        return payload if isinstance(payload, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_listener_state(repo_root: Path, config: dict, state: dict) -> None:
+    path = _listener_state_path(repo_root, config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(state, indent=2) + "\n")
+    temporary.replace(path)
+
+
+def _pid_alive(pid: object) -> bool:
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def _parse_start_command(text: str) -> tuple[list[int], str | None, str | None]:
+    tokens = text.strip().split()
+    if not tokens or tokens[0].lower() != "start":
+        return [], None, None
+    numbers = []
+    coordinator = None
+    implementer = None
+    for token in tokens[1:]:
+        lowered = token.lower().strip(",")
+        if lowered.startswith("coordinator="):
+            coordinator = token.split("=", 1)[1].strip()
+        elif lowered.startswith("implementer="):
+            implementer = token.split("=", 1)[1].strip()
+        elif re.fullmatch(r"#?\d+", lowered):
+            number = int(lowered.lstrip("#"))
+            if number not in numbers:
+                numbers.append(number)
+    return numbers, coordinator, implementer
+
+
+def _parse_models_command(text: str) -> tuple[str, str] | None:
+    tokens = text.strip().split()
+    if len(tokens) == 2 and tokens[0].lower() == "models" and tokens[1].lower() == "default":
+        return "", ""
+    if len(tokens) == 3 and tokens[0].lower() == "models":
+        return tokens[1], tokens[2]
+    return None
+
+
+def _queue_requested_issues(config: dict, numbers: list[int]) -> tuple[str, str]:
+    tracker = config.get("tracker", {})
+    github_repo = str(tracker.get("repo") or "")
+    if not github_repo:
+        raise RuntimeError("tracker.repo is required")
+    queue_label = _role(
+        config, ("tracker", "roles", "queue", "label"), "agent-ready"
+    )
+    excluded = set(
+        _role(
+            config,
+            ("tracker", "roles", "exclude", "labels"),
+            ["agent-claimed", "agent-blocked", "manual", "gated", "decision"],
+        )
+    )
+    issues = []
+    for number in numbers:
+        issue = get_issue(github_repo, number)
+        if issue.state.upper() != "OPEN":
+            raise RuntimeError("issue #%d is not open" % number)
+        blockers = excluded.intersection(issue.labels)
+        if blockers:
+            raise RuntimeError(
+                "issue #%d cannot start while labelled %s"
+                % (number, ", ".join(sorted(blockers)))
+            )
+        issues.append(issue)
+    for issue in issues:
+        number = issue.number
+        if queue_label not in issue.labels:
+            add_label(github_repo, number, queue_label)
+    return github_repo, queue_label
+
+
+def _launch_listener_run(
+    repo_root: Path,
+    config: dict,
+    numbers: list[int],
+    coordinator: str,
+    implementer: str,
+) -> tuple[subprocess.Popen, Path]:
+    _queue_requested_issues(config, numbers)
+    state_dir = _listener_state_path(repo_root, config).parent
+    state_dir.mkdir(parents=True, exist_ok=True)
+    log_path = state_dir / ("run-%d.log" % int(time.time()))
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "run",
+        str(repo_root),
+        "--max",
+        str(len(numbers)),
+        "--issues",
+        ",".join(str(number) for number in numbers),
+        "--engine",
+        "claude",
+        "--coordinator-model",
+        coordinator,
+        "--implementer-model",
+        implementer,
+    ]
+    log_handle = log_path.open("w")
+    try:
+        child_env = os.environ.copy()
+        child_env["DW_TELEGRAM_LISTENER_ACTIVE"] = "1"
+        process = subprocess.Popen(
+            command,
+            cwd=repo_root,
+            env=child_env,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    finally:
+        log_handle.close()
+    return process, log_path
+
+
+def _run_listener(repo_root: Path, config: dict) -> int:
+    if _role(config, ("agent", "enabled"), False) is not True:
+        raise RuntimeError("local agent listener is disabled; set agent.enabled: true")
+    runtime = _telegram_runtime(repo_root, config)
+    if runtime is None:
+        raise RuntimeError("listen requires chat.provider: telegram")
+    bridge, env = runtime
+    tracker = config.get("tracker", {})
+    github_repo = str(tracker.get("repo") or "")
+    blocked_label = _role(
+        config, ("tracker", "roles", "blocked", "label"), "agent-blocked"
+    )
+    state = _load_listener_state(repo_root, config)
+    if state.get("pid") != os.getpid() and _pid_alive(state.get("pid")):
+        raise RuntimeError(
+            "another local Telegram listener is already running (pid %s)"
+            % state.get("pid")
+        )
+    state.setdefault("paused", False)
+    state["pid"] = os.getpid()
+    state.setdefault("pending_start", None)
+    state.setdefault("active_run", None)
+    _save_listener_state(repo_root, config, state)
+    _send_telegram_text(
+        bridge,
+        env,
+        repo_root,
+        "🟢 Local issue listener online. Commands: start <issue numbers>, status, pause, resume.",
+    )
+    active_process = None
+    try:
+        while True:
+            if (
+                active_process is None
+                and state.get("active_run")
+                and not _pid_alive((state.get("active_run") or {}).get("pid"))
+            ):
+                active = state.get("active_run") or {}
+                _send_telegram_text(
+                    bridge,
+                    env,
+                    repo_root,
+                    "ℹ️ The previous local pass for %s has ended. Check its issue or PR status."
+                    % ", ".join(
+                        "#%s" % number for number in active.get("issues", [])
+                    ),
+                )
+                state["active_run"] = None
+                _save_listener_state(repo_root, config, state)
+            if active_process is not None and active_process.poll() is not None:
+                active = state.get("active_run") or {}
+                numbers = active.get("issues") or []
+                success = active_process.returncode == 0
+                _send_telegram_text(
+                    bridge,
+                    env,
+                    repo_root,
+                    "%s Local pass finished for %s."
+                    % (
+                        "✅" if success else "⚠️",
+                        ", ".join("#%s" % number for number in numbers),
+                    ),
+                )
+                active_process = None
+                state["active_run"] = None
+                _save_listener_state(repo_root, config, state)
+
+            messages = _poll_telegram_answers(
+                repo_root,
+                config,
+                github_repo,
+                blocked_label,
+                timeout=5,
+            )
+            for message in messages:
+                text = str(message.get("text") or "").strip()
+                lowered = text.lower()
+                if lowered == "status":
+                    active = state.get("active_run")
+                    if active:
+                        detail = "running " + ", ".join(
+                            "#%s" % number for number in active.get("issues", [])
+                        )
+                    elif state.get("pending_start"):
+                        detail = "waiting for model selection"
+                    else:
+                        detail = "idle"
+                    _send_telegram_text(
+                        bridge,
+                        env,
+                        repo_root,
+                        "📍 Listener is %s and %s."
+                        % ("paused" if state.get("paused") else "active", detail),
+                    )
+                    continue
+                if lowered == "pause":
+                    state["paused"] = True
+                    _save_listener_state(repo_root, config, state)
+                    _send_telegram_text(
+                        bridge,
+                        env,
+                        repo_root,
+                        "⏸️ Listener paused. An active pass, if any, is not interrupted.",
+                    )
+                    continue
+                if lowered == "resume":
+                    state["paused"] = False
+                    _save_listener_state(repo_root, config, state)
+                    _send_telegram_text(
+                        bridge, env, repo_root, "▶️ Listener resumed."
+                    )
+                    continue
+                if lowered == "cancel" and state.get("pending_start"):
+                    state["pending_start"] = None
+                    _save_listener_state(repo_root, config, state)
+                    _send_telegram_text(
+                        bridge, env, repo_root, "🛑 Pending start cancelled."
+                    )
+                    continue
+
+                numbers, coordinator, implementer = _parse_start_command(text)
+                if text.lower().startswith("start"):
+                    if state.get("paused"):
+                        _send_telegram_text(
+                            bridge, env, repo_root, "⏸️ Listener is paused. Send resume first."
+                        )
+                        continue
+                    if active_process is not None or (
+                        state.get("active_run")
+                        and _pid_alive((state.get("active_run") or {}).get("pid"))
+                    ):
+                        _send_telegram_text(
+                            bridge, env, repo_root, "⚠️ A local pass is already running."
+                        )
+                        continue
+                    if not numbers or len(numbers) > 3:
+                        _send_telegram_text(
+                            bridge,
+                            env,
+                            repo_root,
+                            "Use: start 995 996 997 (one to three issue numbers).",
+                        )
+                        continue
+                    if coordinator and implementer:
+                        selected_models = (coordinator, implementer)
+                    else:
+                        state["pending_start"] = {"issues": numbers}
+                        _save_listener_state(repo_root, config, state)
+                        default_coordinator = _role(config, ("build", "model"), "fable")
+                        default_implementer = _role(
+                            config, ("build", "subagent_model"), "opus"
+                        )
+                        _send_telegram_text(
+                            bridge,
+                            env,
+                            repo_root,
+                            "🤖 Choose models for %s.\n\nReply: models <coordinator> <implementer>\nExample: models opus opus\nOr: models default (%s / %s)\nOr: cancel"
+                            % (
+                                ", ".join("#%s" % number for number in numbers),
+                                default_coordinator,
+                                default_implementer,
+                            ),
+                        )
+                        continue
+                else:
+                    selected_models = _parse_models_command(text)
+                    pending = state.get("pending_start")
+                    if selected_models is None or not pending:
+                        continue
+                    numbers = [int(number) for number in pending.get("issues", [])]
+
+                coordinator, implementer = selected_models
+                coordinator = coordinator or _role(config, ("build", "model"), "fable")
+                implementer = implementer or _role(
+                    config, ("build", "subagent_model"), "opus"
+                )
+                try:
+                    active_process, log_path = _launch_listener_run(
+                        repo_root, config, numbers, coordinator, implementer
+                    )
+                except (GitHubAdapterError, OSError, RuntimeError) as exc:
+                    _send_telegram_text(
+                        bridge, env, repo_root, "⚠️ Could not start: %s" % exc
+                    )
+                    continue
+                state["pending_start"] = None
+                state["active_run"] = {
+                    "issues": numbers,
+                    "coordinator": coordinator,
+                    "implementer": implementer,
+                    "pid": active_process.pid,
+                    "log": str(log_path),
+                    "started_at": int(time.time()),
+                }
+                _save_listener_state(repo_root, config, state)
+                _send_telegram_text(
+                    bridge,
+                    env,
+                    repo_root,
+                    "🚀 Starting %s locally.\nCoordinator: %s\nImplementer: %s"
+                    % (
+                        ", ".join("#%s" % number for number in numbers),
+                        coordinator,
+                        implementer,
+                    ),
+                )
+    except KeyboardInterrupt:
+        _send_telegram_text(
+            bridge, env, repo_root, "🔴 Local issue listener stopped."
+        )
+        return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="dw-ticket-loop")
-    parser.add_argument("action", choices=("plan", "run"))
+    parser.add_argument("action", choices=("plan", "run", "listen"))
     parser.add_argument("repo", help="repository path or directory name under ~/Code")
     parser.add_argument("--max", type=int, default=1, dest="maximum")
     parser.add_argument("--engine", choices=("claude", "codex"), default="claude")
@@ -655,6 +1149,10 @@ def main(argv: list[str] | None = None) -> int:
         help="override the configured implementer model; skips its interactive prompt",
     )
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--issues",
+        help="comma-separated issue numbers; run/plan exactly this requested subset",
+    )
     args = parser.parse_args(argv)
     if args.maximum < 1 or args.maximum > 3:
         parser.error("--max must be between 1 and 3")
@@ -664,6 +1162,20 @@ def main(argv: list[str] | None = None) -> int:
         if not config_path.exists():
             raise RuntimeError("dev-workflow.yml not found in %s" % repo_root)
         config = _load_config(config_path)
+        requested_numbers = None
+        if args.issues:
+            try:
+                requested_numbers = [
+                    int(value.strip())
+                    for value in args.issues.split(",")
+                    if value.strip()
+                ]
+            except ValueError as exc:
+                raise RuntimeError("--issues must contain only issue numbers") from exc
+            if not requested_numbers or len(requested_numbers) > 3:
+                raise RuntimeError("--issues requires one to three issue numbers")
+        if args.action == "listen":
+            return _run_listener(repo_root, config)
         if args.action == "run":
             return _run_manual(
                 repo_root,
@@ -673,8 +1185,15 @@ def main(argv: list[str] | None = None) -> int:
                 coordinator_model=args.coordinator_model,
                 implementer_model=args.implementer_model,
                 ask_models=args.engine == "claude" and sys.stdin.isatty(),
+                requested_numbers=requested_numbers,
             )
-        return _plan(repo_root, config, args.maximum, args.json)
+        return _plan(
+            repo_root,
+            config,
+            args.maximum,
+            args.json,
+            requested_numbers,
+        )
     except (GitHubAdapterError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
         print("ERROR: %s" % exc, file=sys.stderr)
         return 1

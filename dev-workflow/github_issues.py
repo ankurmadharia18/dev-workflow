@@ -24,6 +24,7 @@ class GitHubIssue:
     url: str
     created_at: str
     labels: tuple[str, ...]
+    state: str = "OPEN"
 
 
 def _label_names(raw_labels: Iterable[object]) -> tuple[str, ...]:
@@ -93,6 +94,71 @@ def list_actionable(
             )
         )
     return sorted(issues, key=lambda issue: (issue.created_at, issue.number))
+
+
+def get_issue(
+    repo: str,
+    issue_number: int,
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> GitHubIssue:
+    """Read one GitHub issue without mutating it."""
+    command = [
+        "gh",
+        "issue",
+        "view",
+        str(issue_number),
+        "--repo",
+        repo,
+        "--json",
+        "number,title,url,createdAt,labels,state",
+    ]
+    completed = runner(command, capture_output=True, text=True)
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "unknown gh error").strip()
+        raise GitHubAdapterError(
+            "Could not read GitHub issue #%d: %s" % (issue_number, detail)
+        )
+    try:
+        raw = json.loads(completed.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise GitHubAdapterError("GitHub issue lookup returned invalid JSON") from exc
+    if not isinstance(raw, dict) or not raw.get("number"):
+        raise GitHubAdapterError("GitHub issue lookup returned an unexpected payload")
+    return GitHubIssue(
+        number=int(raw["number"]),
+        title=str(raw["title"]),
+        url=str(raw["url"]),
+        created_at=str(raw.get("createdAt", "")),
+        labels=_label_names(raw.get("labels", [])),
+        state=str(raw.get("state", "OPEN")),
+    )
+
+
+def add_label(
+    repo: str,
+    issue_number: int,
+    label: str,
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> None:
+    """Add one configured workflow label to an issue."""
+    command = [
+        "gh",
+        "issue",
+        "edit",
+        str(issue_number),
+        "--repo",
+        repo,
+        "--add-label",
+        label,
+    ]
+    completed = runner(command, capture_output=True, text=True)
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "unknown gh error").strip()
+        raise GitHubAdapterError(
+            "Could not label GitHub issue #%d: %s" % (issue_number, detail)
+        )
 
 
 def set_claimed(
