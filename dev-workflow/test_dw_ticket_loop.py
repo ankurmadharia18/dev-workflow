@@ -195,6 +195,21 @@ class ManualRunTests(unittest.TestCase):
         self.assertTrue(dw_ticket_loop._is_deferral("We will do it next week"))
         self.assertFalse(dw_ticket_loop._is_deferral("Choose option A"))
 
+    def test_transient_telegram_timeouts_are_retryable(self):
+        self.assertTrue(
+            dw_ticket_loop._is_transient_telegram_error(
+                RuntimeError(
+                    "Telegram command failed: telegram getUpdates unreachable: "
+                    "The read operation timed out"
+                )
+            )
+        )
+        self.assertFalse(
+            dw_ticket_loop._is_transient_telegram_error(
+                RuntimeError("missing macOS Keychain item")
+            )
+        )
+
     @patch.object(dw_ticket_loop, "_send_telegram_text")
     @patch.object(dw_ticket_loop, "set_blocked")
     @patch.object(dw_ticket_loop, "comment_issue")

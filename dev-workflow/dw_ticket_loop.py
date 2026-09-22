@@ -323,6 +323,22 @@ def _is_listener_command(text: str) -> bool:
     return first in {"start", "status", "pause", "resume", "models", "cancel"}
 
 
+def _is_transient_telegram_error(error: RuntimeError) -> bool:
+    detail = str(error).lower()
+    return any(
+        marker in detail
+        for marker in (
+            "getupdates unreachable",
+            "read operation timed out",
+            "timed out",
+            "temporary failure",
+            "connection reset",
+            "bad gateway",
+            "service unavailable",
+        )
+    )
+
+
 def _send_telegram_text(
     bridge: list[str],
     env: dict[str, str],
@@ -988,13 +1004,20 @@ def _run_listener(repo_root: Path, config: dict) -> int:
                 state["active_run"] = None
                 _save_listener_state(repo_root, config, state)
 
-            messages = _poll_telegram_answers(
-                repo_root,
-                config,
-                github_repo,
-                blocked_label,
-                timeout=5,
-            )
+            try:
+                messages = _poll_telegram_answers(
+                    repo_root,
+                    config,
+                    github_repo,
+                    blocked_label,
+                    timeout=20,
+                )
+            except RuntimeError as exc:
+                if not _is_transient_telegram_error(exc):
+                    raise
+                print("warning: transient Telegram poll failure: %s" % exc, file=sys.stderr)
+                time.sleep(2)
+                continue
             for message in messages:
                 text = str(message.get("text") or "").strip()
                 lowered = text.lower()
