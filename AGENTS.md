@@ -23,6 +23,8 @@ dev-workflow/
 │   ├── validate.py          # schema + tighten-only validator (PyYAML)
 │   ├── dw-config.py          # dotted-path config reader for shell callers
 │   ├── queue-count.py       # Linear queue-depth pre-check (queue_count verb)
+│   ├── github_issues.py     # GitHub Issues selection + reversible claim adapter
+│   ├── dw_ticket_loop.py    # manual plan/run command; no scheduler
 │   ├── test_validate.py     # unittest for validate.py
 │   └── tracker-adapters.md  # canonical verbs → provider mapping (Linear impl)
 ├── skills/                  # Claude Code plugin skills — setup, worktree, standup, cleanup, release, ticket-loop
@@ -140,6 +142,8 @@ handoff when no rung matches — it never fails the session.
 Run each file directly:
 
 - `python3 dev-workflow/test_validate.py`
+- `python3 dev-workflow/test_github_issues.py`
+- `python3 dev-workflow/test_dw_ticket_loop.py`
 - `python3 dev-workflow/test_queue_count.py`
 - `python3 skills/ticket-loop/orchestrator/test_orch.py`
 - `bash skills/test_root_ladder.sh`

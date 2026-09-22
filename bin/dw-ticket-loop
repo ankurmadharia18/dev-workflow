@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+SCRIPT_PATH=$0
+while [ -L "$SCRIPT_PATH" ]; do
+  LINK_TARGET=$(readlink "$SCRIPT_PATH")
+  case "$LINK_TARGET" in
+    /*) SCRIPT_PATH=$LINK_TARGET ;;
+    *) SCRIPT_PATH=$(dirname -- "$SCRIPT_PATH")/$LINK_TARGET ;;
+  esac
+done
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd)
+if command -v uv >/dev/null 2>&1; then
+  exec uv run --with pyyaml python3 "$SCRIPT_DIR/../dev-workflow/dw_ticket_loop.py" "$@"
+fi
+exec python3 "$SCRIPT_DIR/../dev-workflow/dw_ticket_loop.py" "$@"

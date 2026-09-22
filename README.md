@@ -23,10 +23,12 @@ Three tiers, adopt as far as you want to go:
   unattended on a server. Not part of plugin install; it has its own runbook
   track (§ *Autonomous ticket-loop* below).
 
-**Works today with [Linear](https://linear.app) as the tracker and
-[Telegram](https://telegram.org) as the team chat.** Both sit behind an adapter
-seam ([tracker-adapters.md](dev-workflow/tracker-adapters.md)) — GitHub Issues /
-Jira / Slack later means a new mapping, not a rewrite.
+**Works today with [Linear](https://linear.app) as the full tracker and
+[Telegram](https://telegram.org) as the team chat.** GitHub Issues has a
+manual local runner: `dw-ticket-loop plan` previews eligible work and
+`dw-ticket-loop run` claims the selected issues and starts Claude locally.
+There is no schedule or unattended trigger in this phase. Both sit behind an
+adapter seam ([tracker-adapters.md](dev-workflow/tracker-adapters.md)).
 
 Secrets are injected at runtime; the framework is baked **read-only** so the
 agent physically cannot edit its own leash. The narrative behind the skills is
@@ -125,6 +127,28 @@ enumerated in [`skills/ticket-loop/env.example`](skills/ticket-loop/env.example)
    `/standup`, build (committing as you go), ship a PR with `/cleanup`, and
    promote a ready batch with `/release`. The opinions behind that loop are the
    next section.
+
+### Manual GitHub issue execution (Phase 1)
+
+For a repo configured with `tracker.provider: github`, preview up to three
+eligible issues locally:
+
+```
+dw-ticket-loop plan <repo-path-or-name> --max 3
+```
+
+`plan` is read-only. After reviewing its selection, manually start the local
+Claude coordinator with:
+
+```
+dw-ticket-loop run <repo-path-or-name> --max 3
+```
+
+`run` requires `agent.enabled: true`, moves selected issues from the ready
+label to the claimed label, and restores them if Claude fails. The generated
+instructions allow only feature-branch pushes and draft PR creation for human
+review; they prohibit direct trunk pushes, merging, deployment, issue comments,
+and cloud changes. No cron or launchd job is installed.
 
 ### The skills at a glance
 
@@ -232,6 +256,8 @@ The framework files:
 | [dev-workflow/dev-workflow.example.yml](dev-workflow/dev-workflow.example.yml) | Annotated full config — branch model, tracker team/roles, test/lint commands, tightened guardrails, schedule |
 | [dev-workflow/validate.py](dev-workflow/validate.py) | Schema + tighten-only validator — rejects unknown keys and any config that raises a ceiling |
 | [dev-workflow/dw-config.py](dev-workflow/dw-config.py) | Dotted-path config reader shell scripts use (`dw-config.py dev-workflow.yml tracker.team`) |
+| [dev-workflow/github_issues.py](dev-workflow/github_issues.py) | GitHub Issues Phase 1 adapter: read-only selection plus reversible ready/claimed ownership |
+| [dev-workflow/dw_ticket_loop.py](dev-workflow/dw_ticket_loop.py) | Manual `dw-ticket-loop plan/run` CLI; starts local Claude execution but never schedules itself |
 | [dev-workflow/dw-board.py](dev-workflow/dw-board.py) | Framework board tool — `dw-board snapshot` renders the board views from Linear, `dw-board prune` reports (config-gated) old Done/Canceled tickets, `dw-board import` bulk-creates issues from a JSON holding file (dry-run unless `--yes`). Team + gates + prune policy from config; `LINEAR_API_KEY` from the env only |
 | [dev-workflow/tracker-adapters.md](dev-workflow/tracker-adapters.md) | The provider seam — canonical verbs (`list_actionable`, `move`, `label`, …) mapped onto a tracker (Linear today; GitHub Issues sketch) |
 | [skills/worktree/](skills/worktree/) · [skills/standup/](skills/standup/) · [skills/cleanup/](skills/cleanup/) · [skills/release/](skills/release/) | The session skills — fresh worktree/branch, open a session, close it into a PR, promote to prod. Driven entirely by `dev-workflow.yml` |

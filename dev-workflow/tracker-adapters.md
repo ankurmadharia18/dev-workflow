@@ -2,9 +2,10 @@
 
 The skills and the autonomous loop never talk to a tracker directly. They
 talk in **canonical verbs**, and a thin per-provider adapter maps each verb
-onto that tracker's API. Today there is one implementation — **Linear**, via
-its MCP server — but every skill is written against the verbs below, not
-against Linear, so a second provider is a new mapping table, not a rewrite.
+onto that tracker's API. Linear has the full implementation via its MCP
+server. GitHub Issues currently implements `list_actionable` plus one narrowly
+scoped mutation for manual execution: ready-to-claimed ownership, with rollback
+to ready when the Claude process fails.
 
 **One hard rule: state and label names always come from `tracker.roles` in
 `dev-workflow.yml`.** A skill must never hardcode `agent`, `Todo`, `Done`,
@@ -76,7 +77,15 @@ To wire a second tracker, add its name to `KNOWN_TRACKERS` in `validate.py`
 and write a mapping table like the one above — implement each canonical verb,
 resolving every state/label from `tracker.roles`, never hardcoding names.
 
-**GitHub Issues sketch** (illustrative):
+## GitHub Issues mapping (Phase 1: manual local execution)
+
+The implemented Phase 1 adapter is `github_issues.py`. It shells out to the
+authenticated `gh` CLI. `list_actionable` returns open issues with the
+configured queue label, minus issues with an excluded label, oldest first.
+Planning is read-only. A manual `run` swaps ready for claimed before Claude
+starts and restores ready if Claude exits unsuccessfully.
+
+The remaining mapping for a later, explicitly approved phase is:
 
 - **Labels → labels.** The `queue` / `blocked` / `exclude` roles map straight
   onto GitHub issue labels (`roles.queue.label` = e.g. `agent`).
