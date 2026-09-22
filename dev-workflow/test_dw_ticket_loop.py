@@ -83,6 +83,30 @@ class ManualRunTests(unittest.TestCase):
         self.assertIn("⚠️ #449 — run failed", message)
         self.assertIn("Typecheck could not complete.", message)
 
+    def test_plain_english_review_question_uses_latest_issue(self):
+        progress = {"issues": {"449": {"phase": "pr_opened"}}}
+        self.assertEqual(
+            dw_ticket_loop._natural_status_numbers(
+                "Review agents also run? PR is raised?", progress
+            ),
+            [449],
+        )
+
+    def test_plain_english_status_question_honors_explicit_issue(self):
+        progress = {"issues": {"449": {"phase": "pr_opened"}}}
+        self.assertEqual(
+            dw_ticket_loop._natural_status_numbers(
+                "Was review done for #997?", progress
+            ),
+            [997],
+        )
+
+    def test_unrelated_chatter_is_not_misclassified_as_status(self):
+        progress = {"issues": {"449": {"phase": "pr_opened"}}}
+        self.assertIsNone(
+            dw_ticket_loop._natural_status_numbers("Lunch is ready", progress)
+        )
+
     def test_orchestrated_outcome_is_atomic_and_uses_external_state_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
