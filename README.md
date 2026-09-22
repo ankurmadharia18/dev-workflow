@@ -173,6 +173,23 @@ instructions allow only feature-branch pushes and draft PR creation for human
 review; they prohibit direct trunk pushes, merging, deployment, issue comments,
 and cloud changes. No cron or launchd job is installed.
 
+To control the same local runner from Telegram, manually start the foreground
+listener on the Mac:
+
+```
+dw-ticket-loop listen <repo-path-or-name>
+```
+
+The listener accepts `start 995 996 997` (one to three issue numbers), asks for
+the coordinator and implementer models, then launches exactly that local issue
+set. `status`, `pause`, and `resume` control new starts; pausing never kills an
+in-flight pass. You can skip the model question with
+`start 995 coordinator=opus implementer=opus`. The listener also records
+clarification replies, keeps `wait`/`hold`/`next week` answers blocked, and
+acknowledges routed answers in Telegram. It is not a daemon: closing the command
+stops Telegram control, and no cloud service, cron entry, or launchd job is
+installed.
+
 ### The skills at a glance
 
 Each skill reads `dev-workflow.yml` for your branch names, tracker roles, and
@@ -280,7 +297,7 @@ The framework files:
 | [dev-workflow/validate.py](dev-workflow/validate.py) | Schema + tighten-only validator — rejects unknown keys and any config that raises a ceiling |
 | [dev-workflow/dw-config.py](dev-workflow/dw-config.py) | Dotted-path config reader shell scripts use (`dw-config.py dev-workflow.yml tracker.team`) |
 | [dev-workflow/github_issues.py](dev-workflow/github_issues.py) | GitHub Issues Phase 1 adapter: read-only selection plus reversible ready/claimed ownership |
-| [dev-workflow/dw_ticket_loop.py](dev-workflow/dw_ticket_loop.py) | Manual `dw-ticket-loop plan/run` CLI; starts local Claude execution but never schedules itself |
+| [dev-workflow/dw_ticket_loop.py](dev-workflow/dw_ticket_loop.py) | Manual `dw-ticket-loop plan/run/listen` CLI; starts local Claude execution or a foreground Telegram controller but never schedules itself |
 | [dev-workflow/dw-board.py](dev-workflow/dw-board.py) | Framework board tool — `dw-board snapshot` renders the board views from Linear, `dw-board prune` reports (config-gated) old Done/Canceled tickets, `dw-board import` bulk-creates issues from a JSON holding file (dry-run unless `--yes`). Team + gates + prune policy from config; `LINEAR_API_KEY` from the env only |
 | [dev-workflow/tracker-adapters.md](dev-workflow/tracker-adapters.md) | The provider seam — canonical verbs (`list_actionable`, `move`, `label`, …) mapped onto a tracker (Linear today; GitHub Issues sketch) |
 | [skills/worktree/](skills/worktree/) · [skills/standup/](skills/standup/) · [skills/cleanup/](skills/cleanup/) · [skills/release/](skills/release/) | The session skills — fresh worktree/branch, open a session, close it into a PR, promote to prod. Driven entirely by `dev-workflow.yml` |

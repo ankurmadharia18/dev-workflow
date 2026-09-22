@@ -160,6 +160,155 @@ class ManualRunTests(unittest.TestCase):
         )
         self.assertTrue(message.endswith("choice or answer."))
 
+    @patch.object(
+        dw_ticket_loop,
+        "_telegram_runtime",
+        return_value=(["python3", "telegram.py"], {}),
+    )
+    def test_telegram_question_removes_duplicate_option_letters(self, _runtime):
+        completed = subprocess.CompletedProcess([], 0, "", "")
+        with patch.object(
+            dw_ticket_loop.subprocess, "run", return_value=completed
+        ) as runner:
+            dw_ticket_loop._send_telegram_question(
+                Path("/tmp/repo"),
+                CONFIG,
+                ISSUE,
+                "Summary.",
+                "Choose one.",
+                ["A) First", "B. Second"],
+            )
+        message = runner.call_args.args[0][-1]
+        self.assertIn("• A — First", message)
+        self.assertIn("• B — Second", message)
+        self.assertNotIn("A — A)", message)
+
+    def test_reply_to_hash_issue_acknowledgement_is_routable(self):
+        message = {
+            "ticket": None,
+            "reply_to_text": "⏸️ #865 remains on hold — understood.",
+        }
+        self.assertEqual(dw_ticket_loop._issue_number_from_message(message), 865)
+
+    def test_deferrals_are_detected(self):
+        self.assertTrue(dw_ticket_loop._is_deferral("I dont know yet. Wait."))
+        self.assertTrue(dw_ticket_loop._is_deferral("We will do it next week"))
+        self.assertFalse(dw_ticket_loop._is_deferral("Choose option A"))
+
+    @patch.object(dw_ticket_loop, "_send_telegram_text")
+    @patch.object(dw_ticket_loop, "set_blocked")
+    @patch.object(dw_ticket_loop, "comment_issue")
+    @patch.object(
+        dw_ticket_loop,
+        "_telegram_runtime",
+        return_value=(["python3", "telegram.py"], {}),
+    )
+    @patch.object(
+        dw_ticket_loop,
+        "_open_telegram_questions",
+        return_value=[{"message_id": "10", "ticket": "SS-865"}],
+    )
+    def test_single_open_question_routes_standalone_deferral_but_keeps_blocked(
+        self,
+        _questions,
+        _runtime,
+        comment_mock,
+        blocked_mock,
+        send_mock,
+    ):
+        poll = subprocess.CompletedProcess(
+            [],
+            0,
+            json.dumps(
+                {
+                    "message_id": 11,
+                    "text": "I dont know yet. Wait.",
+                    "ticket": None,
+                    "reply_to_text": None,
+                }
+            )
+            + "\n",
+            "",
+        )
+        cleared = subprocess.CompletedProcess([], 0, "", "")
+        with patch.object(
+            dw_ticket_loop,
+            "_telegram_command",
+            side_effect=[poll, cleared],
+        ):
+            unhandled = dw_ticket_loop._poll_telegram_answers(
+                Path("/tmp/repo"), CONFIG, "acme/repo", "agent-blocked"
+            )
+
+        self.assertEqual(unhandled, [])
+        comment_mock.assert_called_once_with(
+            "acme/repo", 865, "📩 Answer via Telegram: I dont know yet. Wait."
+        )
+        blocked_mock.assert_called_once_with(
+            "acme/repo", 865, "agent-blocked", blocked=True
+        )
+        self.assertEqual(send_mock.call_args.kwargs["ticket"], "SS-865")
+
+    @patch.object(dw_ticket_loop, "_send_telegram_text")
+    @patch.object(dw_ticket_loop, "set_blocked")
+    @patch.object(dw_ticket_loop, "comment_issue")
+    @patch.object(
+        dw_ticket_loop,
+        "_telegram_runtime",
+        return_value=(["python3", "telegram.py"], {}),
+    )
+    @patch.object(dw_ticket_loop, "_open_telegram_questions", return_value=[])
+    def test_reply_to_hash_issue_routes_answer_and_unblocks(
+        self,
+        _questions,
+        _runtime,
+        comment_mock,
+        blocked_mock,
+        send_mock,
+    ):
+        poll = subprocess.CompletedProcess(
+            [],
+            0,
+            json.dumps(
+                {
+                    "message_id": 13,
+                    "text": "Choose option A",
+                    "ticket": None,
+                    "reply_to_text": "⏸️ #865 remains on hold",
+                }
+            )
+            + "\n",
+            "",
+        )
+        cleared = subprocess.CompletedProcess([], 0, "", "")
+        with patch.object(
+            dw_ticket_loop,
+            "_telegram_command",
+            side_effect=[poll, cleared],
+        ):
+            dw_ticket_loop._poll_telegram_answers(
+                Path("/tmp/repo"), CONFIG, "acme/repo", "agent-blocked"
+            )
+        blocked_mock.assert_called_once_with(
+            "acme/repo", 865, "agent-blocked", blocked=False
+        )
+        self.assertNotIn("ticket", send_mock.call_args.kwargs)
+
+    def test_start_command_accepts_three_issues_and_model_overrides(self):
+        parsed = dw_ticket_loop._parse_start_command(
+            "start 995 #996 997 coordinator=opus implementer=sonnet"
+        )
+        self.assertEqual(parsed, ([995, 996, 997], "opus", "sonnet"))
+
+    def test_models_command_supports_defaults_and_explicit_models(self):
+        self.assertEqual(
+            dw_ticket_loop._parse_models_command("models default"), ("", "")
+        )
+        self.assertEqual(
+            dw_ticket_loop._parse_models_command("models opus opus"),
+            ("opus", "opus"),
+        )
+
     @patch.object(dw_ticket_loop, "_selection", return_value=("acme/repo", "agent-ready", []))
     @patch.object(dw_ticket_loop, "_engine_is_authenticated", return_value=True)
     def test_empty_queue_does_not_start_claude(self, _auth, _selection):
