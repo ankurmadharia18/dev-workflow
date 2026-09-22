@@ -94,6 +94,7 @@ class ManualRunTests(unittest.TestCase):
                             "status": "needs_input",
                             "summary": "A decision is required.",
                             "question": "Which behavior should win?",
+                            "options": ["Keep the current behavior", "Use the new behavior"],
                             "pr_url": "",
                         }
                     ]
@@ -111,6 +112,7 @@ class ManualRunTests(unittest.TestCase):
                     "status": "pr_opened",
                     "summary": "Draft PR opened.",
                     "question": "",
+                    "options": [],
                     "pr_url": "https://github.com/acme/repo/pull/7",
                 }
             ]
@@ -129,6 +131,34 @@ class ManualRunTests(unittest.TestCase):
         config["agent"] = {"enabled": False}
         with self.assertRaisesRegex(RuntimeError, "disabled"):
             dw_ticket_loop._run_manual(Path("/tmp/repo"), config, 1)
+
+    @patch.object(
+        dw_ticket_loop,
+        "_telegram_runtime",
+        return_value=(["python3", "telegram.py"], {}),
+    )
+    def test_telegram_question_has_paragraphs_and_bulleted_options(self, _runtime):
+        completed = subprocess.CompletedProcess([], 0, "", "")
+        with patch.object(
+            dw_ticket_loop.subprocess, "run", return_value=completed
+        ) as runner:
+            dw_ticket_loop._send_telegram_question(
+                Path("/tmp/repo"),
+                CONFIG,
+                ISSUE,
+                "The existing behavior has two safe alternatives.",
+                "Which behavior should win?",
+                ["Keep the current behavior", "Use the new behavior"],
+            )
+
+        message = runner.call_args.args[0][-1]
+        self.assertIn("\n\nDecision needed:\nWhich behavior should win?", message)
+        self.assertIn(
+            "\n\nOptions:\n• A — Keep the current behavior\n"
+            "• B — Use the new behavior",
+            message,
+        )
+        self.assertTrue(message.endswith("choice or answer."))
 
     @patch.object(dw_ticket_loop, "_selection", return_value=("acme/repo", "agent-ready", []))
     @patch.object(dw_ticket_loop, "_engine_is_authenticated", return_value=True)
@@ -206,7 +236,9 @@ class ManualRunTests(unittest.TestCase):
         return_value={
             42: {
                 "status": "needs_input",
+                "summary": "Retry behavior needs a product decision.",
                 "question": "Should retries remain manual?",
+                "options": ["Keep retries manual", "Automate retries"],
             }
         },
     )
