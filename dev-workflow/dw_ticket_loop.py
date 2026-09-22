@@ -172,7 +172,10 @@ Required verification when relevant:
 
 Finish with only one JSON object matching the requested output schema: one outcome
 per issue with issue number, status, concise summary, exact human question (or
-empty), and draft PR URL (or empty). Do not wrap the JSON in Markdown.
+empty), answer options as an array (or empty), and draft PR URL (or empty). For
+`needs_input`, ask exactly one decision per outcome: keep `summary` to 1-3 short
+sentences, put only the decision in `question`, and put each possible answer in a
+separate `options` element. Do not wrap the JSON in Markdown.
 Use `needs_input` only when a human decision is genuinely required. Stop that
 issue safely, preserve its worktree, and put one self-contained question in
 `question`. Never access Telegram or any credential yourself; the parent runner
@@ -270,17 +273,28 @@ def _send_telegram_question(
     repo_root: Path,
     config: dict,
     issue,
+    summary: str,
     question: str,
+    options: list[str],
 ) -> None:
     runtime = _telegram_runtime(repo_root, config)
     if runtime is None:
         raise RuntimeError("needs-input requires chat.provider: telegram")
     bridge, env = runtime
-    text = "❓ #%d — %s\n%s\n\nReply directly to this message." % (
-        issue.number,
-        issue.title,
-        question,
-    )
+    sections = ["❓ #%d — %s" % (issue.number, issue.title)]
+    if summary.strip():
+        sections.append(summary.strip())
+    sections.append("Decision needed:\n%s" % question.strip())
+    if options:
+        option_lines = [
+            "• %s — %s" % (chr(ord("A") + index), option.strip())
+            for index, option in enumerate(options)
+            if option.strip()
+        ]
+        if option_lines:
+            sections.append("Options:\n" + "\n".join(option_lines))
+    sections.append("Reply directly to this message with your choice or answer.")
+    text = "\n\n".join(sections)
     completed = subprocess.run(
         bridge + ["send", "--ticket", "SS-%d" % issue.number, text],
         cwd=repo_root,
@@ -311,9 +325,20 @@ def _outcome_schema() -> dict:
                         },
                         "summary": {"type": "string"},
                         "question": {"type": "string"},
+                        "options": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
                         "pr_url": {"type": "string"},
                     },
-                    "required": ["number", "status", "summary", "question", "pr_url"],
+                    "required": [
+                        "number",
+                        "status",
+                        "summary",
+                        "question",
+                        "options",
+                        "pr_url",
+                    ],
                     "additionalProperties": False,
                 },
             }
@@ -542,13 +567,27 @@ def _run_manual(
             if status == "pr_opened":
                 continue
             if status == "needs_input":
+                summary = str(outcome.get("summary") or "").strip()
                 question = str(outcome.get("question") or "").strip()
+                raw_options = outcome.get("options") or []
+                options = [
+                    str(option).strip()
+                    for option in raw_options
+                    if str(option).strip()
+                ]
                 if not question:
                     raise RuntimeError(
                         "coordinator marked issue #%d needs_input without a question"
                         % issue.number
                     )
-                _send_telegram_question(repo_root, config, issue, question)
+                _send_telegram_question(
+                    repo_root,
+                    config,
+                    issue,
+                    summary,
+                    question,
+                    options,
+                )
                 comment_issue(
                     github_repo,
                     issue.number,
