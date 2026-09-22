@@ -40,6 +40,42 @@ ISSUE = GitHubIssue(
 
 
 class ManualRunTests(unittest.TestCase):
+    def test_interactive_claude_model_selection_uses_answers(self):
+        answers = iter(["sonnet", "opus"])
+        coordinator, implementer = dw_ticket_loop._resolve_models(
+            CONFIG,
+            "claude",
+            None,
+            None,
+            ask=True,
+            input_fn=lambda _prompt: next(answers),
+        )
+        self.assertEqual(coordinator, "sonnet")
+        self.assertEqual(implementer, "opus")
+
+    def test_interactive_claude_model_selection_keeps_defaults_on_enter(self):
+        coordinator, implementer = dw_ticket_loop._resolve_models(
+            CONFIG,
+            "claude",
+            None,
+            None,
+            ask=True,
+            input_fn=lambda _prompt: "",
+        )
+        self.assertEqual(coordinator, "claude-fable-5-1")
+        self.assertEqual(implementer, "claude-opus-5")
+
+    def test_model_flags_override_prompts(self):
+        coordinator, implementer = dw_ticket_loop._resolve_models(
+            CONFIG,
+            "claude",
+            "sonnet",
+            "sonnet",
+            ask=True,
+            input_fn=lambda _prompt: self.fail("override should skip prompt"),
+        )
+        self.assertEqual((coordinator, implementer), ("sonnet", "sonnet"))
+
     def test_prompt_allows_draft_pr_but_forbids_merge_and_deploy(self):
         prompt = dw_ticket_loop._manual_prompt(
             Path("/tmp/repo"), "acme/repo", [ISSUE], CONFIG

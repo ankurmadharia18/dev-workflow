@@ -151,6 +151,16 @@ dw-ticket-loop run <repo-path-or-name> --engine claude --max 3
 dw-ticket-loop run <repo-path-or-name> --engine codex --max 3
 ```
 
+An interactive Claude run asks which coordinator and implementer model to use
+before it claims any issue. Press Enter to accept the configured defaults, or
+choose a cheaper model when Fable usage is constrained. For a repeatable or
+non-interactive invocation, provide both explicitly:
+
+```
+dw-ticket-loop run <repo> --engine claude --max 3 \
+  --coordinator-model sonnet --implementer-model opus
+```
+
 The Codex profile reads its coordinator/implementer model and reasoning settings
 from `build.codex_*`. For example, `gpt-6-astra` with `low` reasoning can
 coordinate fresh `gpt-5.6-sol` workers at `medium` reasoning. If the Codex

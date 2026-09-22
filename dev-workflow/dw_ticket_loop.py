@@ -162,8 +162,55 @@ blocker. Do not claim success without evidence.
 """
 
 
+def _resolve_models(
+    config: dict,
+    engine: str,
+    coordinator_override: str | None,
+    implementer_override: str | None,
+    *,
+    ask: bool = False,
+    input_fn=input,
+) -> tuple[str, str]:
+    if engine == "claude":
+        coordinator_default = _role(config, ("build", "model"), "fable")
+        implementer_default = _role(
+            config, ("build", "subagent_model"), "opus"
+        )
+    else:
+        coordinator_default = _role(
+            config, ("build", "codex_model"), "gpt-6-astra"
+        )
+        implementer_default = _role(
+            config, ("build", "codex_subagent_model"), "gpt-5.6-sol"
+        )
+
+    coordinator = coordinator_override or coordinator_default
+    implementer = implementer_override or implementer_default
+    if ask and coordinator_override is None:
+        answer = input_fn(
+            "Coordinator model [%s] (for example: fable, sonnet, opus): "
+            % coordinator_default
+        ).strip()
+        coordinator = answer or coordinator_default
+    if ask and implementer_override is None:
+        answer = input_fn(
+            "Implementer model [%s] (for example: opus, sonnet): "
+            % implementer_default
+        ).strip()
+        implementer = answer or implementer_default
+    return coordinator, implementer
+
+
 def _run_manual(
-    repo_root: Path, config: dict, maximum: int, *, engine: str = "claude"
+    repo_root: Path,
+    config: dict,
+    maximum: int,
+    *,
+    engine: str = "claude",
+    coordinator_model: str | None = None,
+    implementer_model: str | None = None,
+    ask_models: bool = False,
+    input_fn=input,
 ) -> int:
     if _role(config, ("agent", "enabled"), False) is not True:
         raise RuntimeError(
@@ -182,6 +229,15 @@ def _run_manual(
         print("No actionable GitHub issues found for %s." % github_repo)
         return 0
 
+    model, selected_implementer_model = _resolve_models(
+        config,
+        engine,
+        coordinator_model,
+        implementer_model,
+        ask=ask_models,
+        input_fn=input_fn,
+    )
+
     claimed_label = _role(
         config, ("tracker", "roles", "claimed", "label"), "agent-claimed"
     )
@@ -198,10 +254,6 @@ def _run_manual(
             claimed.append(issue)
 
         if engine == "claude":
-            model = _role(config, ("build", "model"), "fable")
-            implementer_model = _role(
-                config, ("build", "subagent_model"), "opus"
-            )
             agents = {
                 "implementer": {
                     "description": (
@@ -215,7 +267,7 @@ def _run_manual(
                         "feature-branch push and draft PR creation. Do not merge, deploy, "
                         "access secrets, or alter GitHub issues."
                     ),
-                    "model": implementer_model,
+                    "model": selected_implementer_model,
                 }
             }
             command = [
@@ -227,7 +279,7 @@ def _run_manual(
                     issues,
                     config,
                     engine="claude",
-                    implementer_model=implementer_model,
+                    implementer_model=selected_implementer_model,
                 ),
                 "--model",
                 model,
@@ -239,14 +291,8 @@ def _run_manual(
                 "text",
             ]
         else:
-            model = _role(
-                config, ("build", "codex_model"), "gpt-6-astra"
-            )
             effort = _role(
                 config, ("build", "codex_model_reasoning_effort"), "low"
-            )
-            implementer_model = _role(
-                config, ("build", "codex_subagent_model"), "gpt-5.6-sol"
             )
             implementer_effort = _role(
                 config,
@@ -271,7 +317,7 @@ def _run_manual(
                     issues,
                     config,
                     engine="codex",
-                    implementer_model=implementer_model,
+                    implementer_model=selected_implementer_model,
                     implementer_effort=implementer_effort,
                 ),
             ]
@@ -311,6 +357,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("repo", help="repository path or directory name under ~/Code")
     parser.add_argument("--max", type=int, default=1, dest="maximum")
     parser.add_argument("--engine", choices=("claude", "codex"), default="claude")
+    parser.add_argument(
+        "--coordinator-model",
+        help="override the configured coordinator model; skips its interactive prompt",
+    )
+    parser.add_argument(
+        "--implementer-model",
+        help="override the configured implementer model; skips its interactive prompt",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     if args.maximum < 1 or args.maximum > 3:
@@ -323,7 +377,13 @@ def main(argv: list[str] | None = None) -> int:
         config = _load_config(config_path)
         if args.action == "run":
             return _run_manual(
-                repo_root, config, args.maximum, engine=args.engine
+                repo_root,
+                config,
+                args.maximum,
+                engine=args.engine,
+                coordinator_model=args.coordinator_model,
+                implementer_model=args.implementer_model,
+                ask_models=args.engine == "claude" and sys.stdin.isatty(),
             )
         return _plan(repo_root, config, args.maximum, args.json)
     except (GitHubAdapterError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
