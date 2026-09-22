@@ -299,7 +299,14 @@ def _telegram_runtime(repo_root: Path, config: dict) -> tuple[list[str], dict[st
         config, ("runtime", "state_dir"), ".local/agent-loop"
     )
     env["TICKET_LOOP_STATE_DIR"] = str(state_dir)
+    # Source checkouts keep the bridge under skills/, while the container image
+    # installs both CLIs side-by-side in /opt/dev-workflow/bin. Prefer the source
+    # layout and fall back to the packaged layout so `listen` works in both.
     bridge = Path(__file__).parents[1] / "skills" / "ticket-loop" / "telegram.py"
+    if not bridge.is_file():
+        bridge = Path(__file__).with_name("telegram.py")
+    if not bridge.is_file():
+        raise RuntimeError("Telegram bridge not found next to dw_ticket_loop.py")
     return [sys.executable, str(bridge)], env
 
 
@@ -1368,7 +1375,12 @@ def _run_listener(repo_root: Path, config: dict) -> int:
         config, ("tracker", "roles", "blocked", "label"), "agent-blocked"
     )
     state = _load_listener_state(repo_root, config)
-    if state.get("pid") != os.getpid() and _pid_alive(state.get("pid")):
+    supervised = os.environ.get("DW_TELEGRAM_LISTENER_SUPERVISED") == "1"
+    if (
+        not supervised
+        and state.get("pid") != os.getpid()
+        and _pid_alive(state.get("pid"))
+    ):
         raise RuntimeError(
             "another local Telegram listener is already running (pid %s)"
             % state.get("pid")

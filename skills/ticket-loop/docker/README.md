@@ -166,6 +166,7 @@ projects:
     state_dir: /home/agent/state/super-singularity
     repo: { url: https://github.com/your-org/super-singularity.git, branch: main }
     enabled: false
+    command_listener: true
     model: opus
     tz: Asia/Kolkata
 ```
@@ -185,8 +186,11 @@ export CONTAINER_TZ=Asia/Kolkata
 ./skills/ticket-loop/docker/local-run.sh orchestrator-status
 ```
 
-After validation, set `enabled: true`, upload the roster again and restart the
-container. It uses Docker's `--restart unless-stopped` policy. Only one process
+With `command_listener: true`, Telegram commands such as `start 449`, `status`,
+`pause` and `resume` work immediately while `enabled: false` continues to block
+autonomous scheduled pickup. Set `enabled: true` later only if scheduled queue
+polling is also desired. Upload the roster again and restart the container after
+changing either setting. It uses Docker's `--restart unless-stopped` policy. Only one process
 may call Telegram `getUpdates`; stop any legacy `dw-ticket-loop listen` process
 before this cutover because the orchestrator's ingress becomes the sole bot
 consumer.

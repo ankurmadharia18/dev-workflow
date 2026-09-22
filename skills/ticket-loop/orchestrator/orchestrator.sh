@@ -62,6 +62,7 @@ TELEGRAM="$(find_sibling telegram.py || true)"
 QUEUE_COUNT="$(find_sibling queue-count.py || true)"
 LOCK_SH="$(find_sibling loop-lock.sh || true)"
 ROLLUP_PY="$(find_sibling usage-rollup.py || true)"
+COMMAND_LISTENER="${ORCH_COMMAND_LISTENER:-$(find_sibling dw_ticket_loop.py || true)}"
 
 ROSTER="${ORCH_ROSTER:-/home/agent/roster.yml}"
 ORCH_STATE_DIR="${ORCH_STATE_DIR:-$(dirname "$ROSTER")/orch}"
@@ -284,7 +285,66 @@ stop_ingress() {
   pkill -TERM -P "$INGRESS_SUP_PID" 2>/dev/null
   kill "$INGRESS_SUP_PID" 2>/dev/null
 }
-trap stop_ingress EXIT
+
+# ── Manual Telegram command listeners ────────────────────────────────────────
+# Scheduled eligibility and explicit human commands are separate concerns. A
+# roster entry may remain `enabled: false` (no autonomous pickup) while
+# `command_listener: true` keeps `start <issue>`, status, pause and resume live.
+# Each listener drains the ingress spool for only its own state dir and is
+# restarted independently if it exits.
+COMMAND_LISTENER_PIDS=()
+COMMAND_LISTENER_STOPS=()
+start_command_listener() { # name work_tree env_file state_dir
+  local name="$1" work_tree="$2" env_file="$3" state_dir="$4"
+  local stop_file="$ORCH_STATE_DIR/.command-listener-stop-$name"
+  rm -f "$stop_file"
+  ( restarts=0
+    while [ ! -f "$stop_file" ]; do
+      started=$(date +%s)
+      ( set -a; . "$env_file"; set +a
+        tg_fallback
+        export TICKET_LOOP_INGRESS=1 TICKET_LOOP_STATE_DIR="$state_dir"
+        export DW_TELEGRAM_LISTENER_SUPERVISED=1
+        python3 "$COMMAND_LISTENER" listen "$work_tree"
+      )
+      rc=$?
+      [ -f "$stop_file" ] && break
+      ran=$(( $(date +%s) - started ))
+      restarts=$((restarts + 1))
+      log "command-listener $name exited rc=$rc after ${ran}s — restart #$restarts"
+      if [ "$restarts" -eq 1 ] || [ $((restarts % 10)) -eq 0 ]; then
+        project_alert "$env_file" "$state_dir" \
+          "⚠️ Local issue command listener restarted (rc=$rc, attempt $restarts)."
+      fi
+      [ "$ran" -lt 60 ] && sleep 10 || sleep 2
+    done
+  ) &
+  COMMAND_LISTENER_PIDS+=("$!")
+  COMMAND_LISTENER_STOPS+=("$stop_file")
+  log "command-listener $name supervisor up (pid $!)"
+}
+
+stop_command_listeners() {
+  local stop_file pid
+  for stop_file in "${COMMAND_LISTENER_STOPS[@]}"; do touch "$stop_file"; done
+  for pid in "${COMMAND_LISTENER_PIDS[@]}"; do
+    pkill -TERM -P "$pid" 2>/dev/null || true
+    kill "$pid" 2>/dev/null || true
+  done
+}
+
+if [ -n "$COMMAND_LISTENER" ]; then
+  while IFS=$'\t' read -r _name _work_tree _env_file _state_dir; do
+    [ -n "$_name" ] || continue
+    start_command_listener "$_name" "$_work_tree" "$_env_file" "$_state_dir"
+  done < <($PY "$ORCH_PY" listener-plan --roster "$ROSTER")
+fi
+
+stop_children() {
+  stop_command_listeners
+  stop_ingress
+}
+trap stop_children EXIT
 
 TURN=0
 while :; do
