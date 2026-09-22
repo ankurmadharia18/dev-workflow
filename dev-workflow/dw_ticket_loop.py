@@ -1121,6 +1121,64 @@ def _parse_status_command(text: str) -> list[int] | None:
     return numbers
 
 
+def _natural_status_numbers(text: str, progress: dict) -> list[int] | None:
+    """Map plain-English workflow questions onto the deterministic status view."""
+    normalized = re.sub(r"\s+", " ", text.strip().lower())
+    if not normalized:
+        return None
+    workflow_terms = (
+        "status",
+        "progress",
+        "review",
+        "reviewer",
+        "pr",
+        "pull request",
+        "agent",
+        "finished",
+        "complete",
+        "done",
+        "working",
+        "running",
+    )
+    question_words = ("is ", "are ", "was ", "were ", "did ", "has ", "have ", "will ", "what ", "when ", "why ", "how ")
+    if not any(term in normalized for term in workflow_terms):
+        return None
+    if "?" not in normalized and not normalized.startswith(question_words):
+        return None
+    numbers = []
+    for raw in re.findall(r"(?<!\w)#?(\d+)\b", normalized):
+        number = int(raw)
+        if number not in numbers:
+            numbers.append(number)
+    if numbers:
+        return numbers[:3]
+    progress_issues = progress.get("issues")
+    if not isinstance(progress_issues, dict):
+        return []
+    for raw in progress_issues:
+        try:
+            number = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if number not in numbers:
+            numbers.append(number)
+    return numbers[:3]
+
+
+def _mark_telegram_handled(
+    bridge: list[str], env: dict[str, str], repo_root: Path, message: dict
+) -> None:
+    message_id = message.get("message_id")
+    if message_id is None:
+        return
+    try:
+        _telegram_command(
+            bridge, env, repo_root, ["react", str(message_id), "👍"]
+        )
+    except RuntimeError as exc:
+        print("warning: could not mark Telegram message handled: %s" % exc, file=sys.stderr)
+
+
 def _age_text(timestamp: object) -> str:
     try:
         seconds = max(0, int(time.time()) - int(timestamp))
@@ -1241,6 +1299,38 @@ def _render_workflow_status(
     if len(sections) == 1:
         sections.append("No run history has been recorded yet.")
     return "\n\n".join(sections)
+
+
+def _render_run_completion(
+    progress: dict, requested_numbers: list[int], *, success: bool
+) -> str:
+    """Render an actionable Telegram completion instead of a generic exit note."""
+    progress_issues = (
+        progress.get("issues") if isinstance(progress.get("issues"), dict) else {}
+    )
+    sections = []
+    for number in requested_numbers:
+        item = progress_issues.get(str(number)) or {}
+        phase = str(item.get("phase") or "")
+        detail = str(item.get("detail") or "").strip()
+        pr_url = str(item.get("pr_url") or "").strip()
+        if not success or phase == "failed":
+            headline = "⚠️ #%d — run failed" % number
+        elif phase == "needs_input":
+            headline = "⏸️ #%d — waiting for your answer" % number
+        elif phase == "pr_opened":
+            headline = "✅ #%d — draft PR ready for review" % number
+        else:
+            headline = "✅ #%d — local pass completed" % number
+        lines = [headline]
+        if detail:
+            lines.append(detail)
+        if pr_url:
+            lines.append(pr_url)
+        sections.append("\n".join(lines))
+    if sections:
+        return "\n\n".join(sections)
+    return "✅ Local pass completed." if success else "⚠️ Local pass failed."
 
 
 def _pid_alive(pid: object) -> bool:
@@ -1427,15 +1517,12 @@ def _run_listener(repo_root: Path, config: dict) -> int:
                         str(active["run_id"]),
                         success=success,
                     )
+                progress = _read_progress(repo_root, config)
                 _send_telegram_text(
                     bridge,
                     env,
                     repo_root,
-                    "%s Local pass finished for %s."
-                    % (
-                        "✅" if success else "⚠️",
-                        ", ".join("#%s" % number for number in numbers),
-                    ),
+                    _render_run_completion(progress, numbers, success=success),
                 )
                 active_process = None
                 state["active_run"] = None
@@ -1474,6 +1561,24 @@ def _run_listener(repo_root: Path, config: dict) -> int:
                             repo_root, config, state, requested_status
                         ),
                     )
+                    _mark_telegram_handled(bridge, env, repo_root, message)
+                    continue
+                natural_status = _natural_status_numbers(
+                    text, _read_progress(repo_root, config)
+                )
+                if natural_status is not None:
+                    response = _render_workflow_status(
+                        repo_root, config, state, natural_status
+                    )
+                    if "review" in lowered or "reviewer" in lowered:
+                        response += (
+                            "\n\nReview workflow: the implementer is checked by the "
+                            "coordinator. A separate fresh reviewer agent is not "
+                            "currently launched, so do not treat this as an independent "
+                            "review or GitHub approval."
+                        )
+                    _send_telegram_text(bridge, env, repo_root, response)
+                    _mark_telegram_handled(bridge, env, repo_root, message)
                     continue
                 if lowered == "pause":
                     state["paused"] = True

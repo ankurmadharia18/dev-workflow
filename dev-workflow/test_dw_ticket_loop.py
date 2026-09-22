@@ -41,6 +41,72 @@ ISSUE = GitHubIssue(
 
 
 class ManualRunTests(unittest.TestCase):
+    def test_completion_message_includes_draft_pr_summary_and_url(self):
+        progress = {
+            "issues": {
+                "449": {
+                    "phase": "pr_opened",
+                    "detail": "Company-level sharing settings implemented and verified.",
+                    "pr_url": "https://github.com/acme/repo/pull/10",
+                }
+            }
+        }
+        message = dw_ticket_loop._render_run_completion(
+            progress, [449], success=True
+        )
+        self.assertIn("✅ #449 — draft PR ready for review", message)
+        self.assertIn("Company-level sharing settings implemented", message)
+        self.assertIn("https://github.com/acme/repo/pull/10", message)
+
+    def test_completion_message_distinguishes_waiting_and_failure(self):
+        waiting = {
+            "issues": {
+                "449": {
+                    "phase": "needs_input",
+                    "detail": "Choose the company override behavior.",
+                }
+            }
+        }
+        self.assertIn(
+            "⏸️ #449 — waiting for your answer",
+            dw_ticket_loop._render_run_completion(waiting, [449], success=True),
+        )
+        failed = {
+            "issues": {
+                "449": {
+                    "phase": "testing",
+                    "detail": "Typecheck could not complete.",
+                }
+            }
+        }
+        message = dw_ticket_loop._render_run_completion(failed, [449], success=False)
+        self.assertIn("⚠️ #449 — run failed", message)
+        self.assertIn("Typecheck could not complete.", message)
+
+    def test_plain_english_review_question_uses_latest_issue(self):
+        progress = {"issues": {"449": {"phase": "pr_opened"}}}
+        self.assertEqual(
+            dw_ticket_loop._natural_status_numbers(
+                "Review agents also run? PR is raised?", progress
+            ),
+            [449],
+        )
+
+    def test_plain_english_status_question_honors_explicit_issue(self):
+        progress = {"issues": {"449": {"phase": "pr_opened"}}}
+        self.assertEqual(
+            dw_ticket_loop._natural_status_numbers(
+                "Was review done for #997?", progress
+            ),
+            [997],
+        )
+
+    def test_unrelated_chatter_is_not_misclassified_as_status(self):
+        progress = {"issues": {"449": {"phase": "pr_opened"}}}
+        self.assertIsNone(
+            dw_ticket_loop._natural_status_numbers("Lunch is ready", progress)
+        )
+
     def test_orchestrated_outcome_is_atomic_and_uses_external_state_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
