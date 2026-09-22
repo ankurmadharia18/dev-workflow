@@ -89,6 +89,22 @@ class ManualRunTests(unittest.TestCase):
         self.assertEqual(env["AGENT_TELEGRAM_CHAT_ID"], "-100123")
         self.assertEqual(env["TICKET_LOOP_STATE_DIR"], "/home/agent/state/widgets")
 
+    @patch.object(dw_ticket_loop, "_keychain_value")
+    def test_container_telegram_runtime_falls_back_to_packaged_bridge(self, keychain):
+        config = {"chat": {"provider": "telegram"}}
+        with patch.dict(
+            dw_ticket_loop.os.environ,
+            {
+                "TELEGRAM_BOT_TOKEN": "from-env",
+                "AGENT_TELEGRAM_CHAT_ID": "-100123",
+            },
+            clear=True,
+        ), patch.object(Path, "is_file", side_effect=[False, True]):
+            bridge, _env = dw_ticket_loop._telegram_runtime(Path("/repo"), config)
+        keychain.assert_not_called()
+        self.assertEqual(Path(bridge[1]).name, "telegram.py")
+        self.assertEqual(Path(bridge[1]).parent, Path(dw_ticket_loop.__file__).parent)
+
     def test_interactive_claude_model_selection_uses_answers(self):
         answers = iter(["sonnet", "opus"])
         coordinator, implementer = dw_ticket_loop._resolve_models(

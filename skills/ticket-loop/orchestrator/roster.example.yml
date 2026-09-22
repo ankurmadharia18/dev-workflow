@@ -43,6 +43,9 @@ projects:
     # enabled: false                     # PAUSE without removing: state kept, marker
                                          # guard skipped (stage before the clone
                                          # exists), scheduler never picks it. Default true.
+    # command_listener: true             # Keep `start <issue>`, status, pause and
+                                         # resume available through Telegram even
+                                         # when enabled:false pauses scheduled pickup.
     # skill: ticket-loop-parent          # which skill the pass invokes (bare name;
                                          # the runner namespaces it). Overrides the
                                          # repo's agent.skill. Default: ticket-loop.

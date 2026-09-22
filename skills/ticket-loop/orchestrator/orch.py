@@ -172,6 +172,10 @@ def load_roster(path):
             "cadence": cadence,
             "interval_s": parse_duration(entry.get("interval", cfg["interval"])),
             "enabled": _as_bool(entry.get("enabled", True), True),
+            # A manual Telegram command listener is independent of scheduled
+            # queue pickup. This lets `enabled: false` keep autonomous polling
+            # paused while `start <issue>` remains available on demand.
+            "command_listener": _as_bool(entry.get("command_listener", False)),
             # `skill` (optional): a bare skill NAME the runner namespaces (validated
             # above). Overrides the repo's agent.skill. None → default (ticket-loop).
             "skill": skill,
@@ -767,7 +771,7 @@ def cmd_startup(args):
     try:
         roster = load_roster(args.roster)
         for p in roster["projects"]:
-            if p.get("enabled", True):        # paused entries may be staged
+            if p.get("enabled", True) or p.get("command_listener", False):
                 check_work_tree(p, roster["root"])  # before their clone exists
     except RosterError as exc:
         sys.exit(f"FATAL: {exc}")
@@ -831,7 +835,8 @@ def cmd_status(args):
             due = f"in {secs // 60}m" if secs > 0 else "now"
         parked = f"  PARKED until {ps['parked_until']}" if ps.get("parked_until") else ""
         if not p.get("enabled", True):
-            print(f"  {p['name']:<20} PAUSED (enabled: false) — state preserved, not scheduled")
+            suffix = "; Telegram command listener active" if p.get("command_listener") else ""
+            print(f"  {p['name']:<20} PAUSED (enabled: false) — state preserved, not scheduled{suffix}")
             continue
         print(f"  {p['name']:<20} last={ps.get('last_outcome') or '—':<14} "
               f"next={due:<8} dry={ps['dry_streak']} err={ps['error_streak']} "
@@ -865,6 +870,20 @@ def cmd_seed_plan(args):
         if not url:
             continue
         print("\t".join([p["name"], url, branch, p["work_tree"], p["env_file"]]))
+    return 0
+
+
+def cmd_listener_plan(args):
+    """Emit command listeners as TSV for the PID-1 shell supervisor.
+
+    This is deliberately separate from scheduler eligibility: a project may be
+    paused for autonomous passes and still accept explicit Telegram commands.
+    """
+    roster = load_roster(args.roster)
+    for p in roster["projects"]:
+        if not p.get("command_listener", False):
+            continue
+        print("\t".join([p["name"], p["work_tree"], p["env_file"], p["state_dir"]]))
     return 0
 
 
@@ -933,6 +952,13 @@ def main(argv=None):
     p_sp.add_argument("--roster", required=True)
     p_sp.add_argument("--project", help="limit the plan to one project")
     p_sp.set_defaults(func=cmd_seed_plan)
+
+    p_lp = sub.add_parser(
+        "listener-plan",
+        help="emit manual Telegram listener entries (name work_tree env_file state_dir)",
+    )
+    p_lp.add_argument("--roster", required=True)
+    p_lp.set_defaults(func=cmd_listener_plan)
 
     args = parser.parse_args(argv)
     return args.func(args)

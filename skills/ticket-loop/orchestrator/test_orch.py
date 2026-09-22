@@ -82,6 +82,7 @@ class TestLoadRoster(unittest.TestCase):
         self.assertEqual(p["cadence"], "adaptive")
         self.assertIsNone(p["model"])
         self.assertIsNone(p["window"])
+        self.assertFalse(p["command_listener"])
 
     def test_per_project_override(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -142,6 +143,25 @@ projects:
 """
             with self.assertRaises(orch.RosterError):
                 orch.load_roster(make_roster_dir(tmp, projects_yaml=bad))
+
+    def test_command_listener_is_independent_of_scheduled_enabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            wt = root / "alpha"; wt.mkdir(); (wt / ".dw-agent-clone").touch()
+            roster_path = root / "roster.yml"
+            roster_path.write_text(f"""root: {root}
+projects:
+  - name: alpha
+    work_tree: {wt}
+    env_file: {root}/alpha.env
+    state_dir: {root}/state-alpha
+    enabled: false
+    command_listener: true
+""")
+            roster = orch.load_roster(roster_path)
+        project = roster["projects"][0]
+        self.assertFalse(project["enabled"])
+        self.assertTrue(project["command_listener"])
 
 
 class TestWorkTreeGuard(unittest.TestCase):
@@ -1105,6 +1125,44 @@ projects:
         self.assertEqual(cols[2], "main")
         self.assertEqual(cols[3], f"{root}/alpha")
         self.assertEqual(cols[4], f"{root}/alpha.env")
+
+
+class TestListenerPlan(unittest.TestCase):
+    def test_emits_paused_project_with_manual_listener_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in ("manual", "silent"):
+                wt = root / name
+                wt.mkdir()
+                (wt / ".dw-agent-clone").touch()
+                (root / f"{name}.env").touch()
+            roster = root / "roster.yml"
+            roster.write_text(f"""root: {root}
+projects:
+  - name: manual
+    work_tree: {root}/manual
+    env_file: {root}/manual.env
+    state_dir: {root}/state-manual
+    enabled: false
+    command_listener: true
+  - name: silent
+    work_tree: {root}/silent
+    env_file: {root}/silent.env
+    state_dir: {root}/state-silent
+    enabled: false
+""")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                orch.main(["listener-plan", "--roster", str(roster)])
+        lines = [line for line in buf.getvalue().splitlines() if line]
+        self.assertEqual(lines, [
+            "\t".join([
+                "manual",
+                f"{root}/manual",
+                f"{root}/manual.env",
+                f"{root}/state-manual",
+            ])
+        ])
 
 
 if __name__ == "__main__":
