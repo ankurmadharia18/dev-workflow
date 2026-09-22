@@ -278,13 +278,32 @@ fi
 RAW_OUT="$(mktemp "${TMPDIR:-/tmp}/dw-pass-out.XXXXXX")"
 RAW_ERR="$(mktemp "${TMPDIR:-/tmp}/dw-pass-err.XXXXXX")"
 RESULT_FILE="$(mktemp "${TMPDIR:-/tmp}/dw-pass-result.XXXXXX")"
-claude -p "$INVOKE $*" \
-  --output-format json \
-  ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
-  ${MCP_ARGS[@]+"${MCP_ARGS[@]}"} \
-  ${PLUGIN_ARGS[@]+"${PLUGIN_ARGS[@]}"} \
-  --dangerously-skip-permissions >"$RAW_OUT" 2>"$RAW_ERR"
-rc=$?
+PROVIDER="$(cfg tracker.provider linear 2>/dev/null || echo linear)"
+if [ "$PROVIDER" = github ]; then
+  GITHUB_RUNNER=""
+  for _g in "$DW_ROOT/dw_ticket_loop.py" "$DW_WORK_TREE/dev-workflow/dw_ticket_loop.py"; do
+    [ -f "$_g" ] && { GITHUB_RUNNER="$_g"; break; }
+  done
+  if [ -z "$GITHUB_RUNNER" ]; then
+    echo "GitHub runner not found" >"$RAW_ERR"
+    rc=1
+  else
+    CAP="$(cfg build.cap_per_pass 1 2>/dev/null || echo 1)"
+    ACTION=run
+    case " $* " in *" --dry-run "*|*" --report "*) ACTION=plan ;; esac
+    TICKET_LOOP_MODEL="$MODEL" python3 "$GITHUB_RUNNER" "$ACTION" "$DW_WORK_TREE" \
+      --max "$CAP" --engine claude >"$RAW_OUT" 2>"$RAW_ERR"
+    rc=$?
+  fi
+else
+  claude -p "$INVOKE $*" \
+    --output-format json \
+    ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
+    ${MCP_ARGS[@]+"${MCP_ARGS[@]}"} \
+    ${PLUGIN_ARGS[@]+"${PLUGIN_ARGS[@]}"} \
+    --dangerously-skip-permissions >"$RAW_OUT" 2>"$RAW_ERR"
+  rc=$?
+fi
 
 # Dry-run must stay side-effect-free: parse for the log summary, but record no
 # usage and never page ops.
@@ -301,7 +320,10 @@ for _p in "$DW_ROOT/usage-parse.py" "$DW_WORK_TREE/dev-workflow/usage-parse.py";
   [ -f "$_p" ] && { PARSER="$_p"; break; }
 done
 PARSE_LINE=""
-if [ -n "$PARSER" ] && command -v python3 >/dev/null 2>&1; then
+if [ "$PROVIDER" = github ]; then
+  cat "$RAW_OUT" >> "$LOG"
+  cat "$RAW_ERR" >> "$LOG"
+elif [ -n "$PARSER" ] && command -v python3 >/dev/null 2>&1; then
   PARSE_LINE="$(python3 "$PARSER" --stdout "$RAW_OUT" --stderr "$RAW_ERR" \
       --tenant "$TENANT" --rc "$rc" --result-out "$RESULT_FILE" \
       --usage-out "$USAGE_OUT" 2>>"$LOG" || true)"

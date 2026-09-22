@@ -1,7 +1,8 @@
 # Containerized ticket-loop
 
 Run each scheduled ticket-loop pass in a pinned Docker container on a Linux host,
-on a systemd timer. The image bakes the **dev-workflow framework** (runner +
+on a systemd timer, or run the upstream always-on orchestrator through Docker
+Desktop on macOS. The image bakes the **dev-workflow framework** (runner +
 plugin) root-owned at `/opt/dev-workflow`; your repo checkout, auth, and secrets
 live in a mounted volume. This is the unattended deployment — the interactive
 `/loop /ticket-loop` and the laptop launchd variant (`../install-cron.sh`) are the
@@ -113,7 +114,7 @@ docker run --rm --network host \
 Confirm the tracker MCP answered (static key works), `gh auth` is OK, and the
 Telegram poll succeeded before enabling the timer.
 
-## Try it locally first
+## Try one pass locally first
 
 Before you touch a server, validate the WHOLE loop on your laptop — same image,
 same volume shape, same runner, just local Docker. (No Docker? The native launchd
@@ -144,6 +145,66 @@ above (build → seed → agent.env → units).
 > real local pass, **stop every other runner for this repo** (the box timer, a
 > laptop launchd loop, another container). Two loops on one repo will collide.
 > `dry-run` is safe to run anytime; only `pass --yes` carries this.
+
+## Run the upstream orchestrator on Docker Desktop
+
+The orchestrator is the preferred always-on local shape. It is still the
+upstream PID-1 scheduler and Telegram ingress; `tracker.provider: github` changes
+only the queue pre-check and per-pass executor. Linear projects continue through
+the canonical `/ticket-loop` skill unchanged.
+
+Create a one-project `roster.yml` and start with `enabled: false` until the image,
+auth and Telegram route have been checked:
+
+```yaml
+root: /home/agent
+cadence: adaptive
+projects:
+  - name: super-singularity
+    work_tree: /home/agent/super-singularity
+    env_file: /home/agent/super-singularity.env
+    state_dir: /home/agent/state/super-singularity
+    repo: { url: https://github.com/your-org/super-singularity.git, branch: main }
+    enabled: false
+    model: opus
+    tz: Asia/Kolkata
+```
+
+Then use the helper. Secret files are streamed into the Docker volume and never
+printed or placed in `docker inspect`:
+
+```bash
+export CLAUDE_PIN=<pin>
+export CONTAINER_TZ=Asia/Kolkata
+./skills/ticket-loop/docker/local-run.sh build
+./skills/ticket-loop/docker/local-run.sh seed <repo-url> main super-singularity
+./skills/ticket-loop/docker/local-run.sh put-project-env super-singularity .local/super-singularity.env
+./skills/ticket-loop/docker/local-run.sh put-roster .local/roster.yml
+./skills/ticket-loop/docker/local-run.sh put-orch-env .local/orch.env
+./skills/ticket-loop/docker/local-run.sh orchestrator-up
+./skills/ticket-loop/docker/local-run.sh orchestrator-status
+```
+
+After validation, set `enabled: true`, upload the roster again and restart the
+container. It uses Docker's `--restart unless-stopped` policy. Only one process
+may call Telegram `getUpdates`; stop any legacy `dw-ticket-loop listen` process
+before this cutover because the orchestrator's ingress becomes the sole bot
+consumer.
+
+```bash
+./skills/ticket-loop/docker/local-run.sh run-now super-singularity
+./skills/ticket-loop/docker/local-run.sh orchestrator-logs
+./skills/ticket-loop/docker/local-run.sh orchestrator-down  # volume is preserved
+```
+
+The current GitHub phase handles ticket pickup, Claude coordinator/implementer
+work, clarification questions, progress state and draft PR creation. Linear's
+broader autonomous PR-babysitting/digest/scouting behavior is not yet claimed as
+GitHub parity.
+
+`CONTAINER_TZ` is passed to PID 1 and inherited by the scheduler, Telegram
+ingress and every child pass. For the Super Singularity setup it is
+`Asia/Kolkata`, so container and per-project logs consistently use IST.
 
 ## The `--plugin-dir` fallback
 

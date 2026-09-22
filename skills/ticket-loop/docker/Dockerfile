@@ -57,6 +57,10 @@ RUN set -eux; \
     # uv (to /usr/local/bin so it's on PATH for every user)
     curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 
+# Node ships Corepack, but its package-manager shims are disabled by default.
+# Enable pnpm so a target repo's packageManager pin controls the exact version.
+RUN corepack enable pnpm
+
 # ── AWS CLI v2 + Session Manager plugin (SSM port-forward tunnels) ─────────────
 # Analytics-style repos reach non-exposed databases via
 # `aws ssm start-session` (AWS-StartPortForwardingSessionToRemoteHost), which
@@ -93,7 +97,11 @@ COPY skills/ticket-loop/cron-run.sh \
      skills/ticket-loop/orchestrator/orchestrator.sh \
      skills/ticket-loop/orchestrator/orch.py \
      /opt/dev-workflow/bin/
-COPY dev-workflow/dw-config.py dev-workflow/queue-count.py /opt/dev-workflow/bin/
+COPY dev-workflow/dw-config.py \
+     dev-workflow/queue-count.py \
+     dev-workflow/github_issues.py \
+     dev-workflow/dw_ticket_loop.py \
+     /opt/dev-workflow/bin/
 # The plugin (for --plugin-dir): a copy of the plugin manifest + all skills.
 COPY .claude-plugin/ /opt/dev-workflow/plugin/.claude-plugin/
 COPY skills/ /opt/dev-workflow/plugin/skills/

@@ -48,6 +48,20 @@ PROGRESS_PHASES = {
 }
 
 
+def _write_pass_outcome(repo_root: Path, config: dict, outcome: dict) -> None:
+    """Write the upstream orchestrator contract only for orchestrated passes."""
+    if os.environ.get("DW_ORCHESTRATED") != "1":
+        return
+    configured = os.environ.get("TICKET_LOOP_STATE_DIR", "").strip()
+    state_dir = Path(configured) if configured else repo_root / _role(
+        config, ("runtime", "state_dir"), ".agent-loop"
+    )
+    state_dir.mkdir(parents=True, exist_ok=True)
+    temporary = state_dir / "outcome.tmp"
+    temporary.write_text(json.dumps(outcome, separators=(",", ":")) + "\n")
+    temporary.replace(state_dir / "outcome.json")
+
+
 def _load_config(path: Path) -> dict:
     config_reader = Path(__file__).with_name("dw-config.py")
     spec = importlib.util.spec_from_file_location("dw_config", config_reader)
@@ -128,6 +142,18 @@ def _plan(
             print("  #%d  %s" % (issue.number, issue.title))
             print("       %s" % issue.url)
         print("No issues were claimed and no agents were started.")
+    _write_pass_outcome(
+        repo_root,
+        config,
+        {
+            "picked": 0,
+            "pr_opened": 0,
+            "asked": 0,
+            "blocked": 0,
+            "progressed": False,
+            "error": None,
+        },
+    )
     return 0
 
 
@@ -260,9 +286,16 @@ def _telegram_runtime(repo_root: Path, config: dict) -> tuple[list[str], dict[st
         config, ("chat", "keychain_chat_service"), TELEGRAM_CHAT_SERVICE
     )
     env = os.environ.copy()
-    env["TELEGRAM_BOT_TOKEN"] = _keychain_value(token_service)
-    env["AGENT_TELEGRAM_CHAT_ID"] = _keychain_value(chat_service)
-    state_dir = repo_root / _role(
+    token = env.get("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id = env.get("AGENT_TELEGRAM_CHAT_ID", "").strip()
+    if not token:
+        token = _keychain_value(token_service)
+    if not chat_id:
+        chat_id = _keychain_value(chat_service)
+    env["TELEGRAM_BOT_TOKEN"] = token
+    env["AGENT_TELEGRAM_CHAT_ID"] = chat_id
+    configured_state = env.get("TICKET_LOOP_STATE_DIR", "").strip()
+    state_dir = Path(configured_state) if configured_state else repo_root / _role(
         config, ("runtime", "state_dir"), ".local/agent-loop"
     )
     env["TICKET_LOOP_STATE_DIR"] = str(state_dir)
@@ -564,7 +597,9 @@ def _resolve_models(
     input_fn=input,
 ) -> tuple[str, str]:
     if engine == "claude":
-        coordinator_default = _role(config, ("build", "model"), "fable")
+        coordinator_default = os.environ.get("TICKET_LOOP_MODEL", "").strip() or _role(
+            config, ("build", "model"), "fable"
+        )
         implementer_default = _role(
             config, ("build", "subagent_model"), "opus"
         )
@@ -605,6 +640,14 @@ def _run_manual(
     input_fn=input,
     requested_numbers: list[int] | None = None,
 ) -> int:
+    pass_outcome = {
+        "picked": 0,
+        "pr_opened": 0,
+        "asked": 0,
+        "blocked": 0,
+        "progressed": False,
+        "error": None,
+    }
     if _role(config, ("agent", "enabled"), False) is not True:
         raise RuntimeError(
             "manual agent execution is disabled; set agent.enabled: true"
@@ -632,7 +675,10 @@ def _run_manual(
     )
     if not issues:
         print("No actionable GitHub issues found for %s." % github_repo)
+        _write_pass_outcome(repo_root, config, pass_outcome)
         return 0
+
+    pass_outcome["picked"] = len(issues)
 
     model, selected_implementer_model = _resolve_models(
         config,
@@ -765,13 +811,15 @@ def _run_manual(
             return 0
         outcomes = _load_claude_outcomes(completed.stdout)
         for issue in list(claimed):
-            outcome = outcomes.get(issue.number)
-            if not isinstance(outcome, dict):
+            issue_outcome = outcomes.get(issue.number)
+            if not isinstance(issue_outcome, dict):
                 raise RuntimeError(
                     "coordinator omitted outcome for issue #%d" % issue.number
                 )
-            status = outcome.get("status")
+            status = issue_outcome.get("status")
             if status == "pr_opened":
+                pass_outcome["pr_opened"] += 1
+                pass_outcome["progressed"] = True
                 _update_progress(
                     repo_root,
                     config,
@@ -779,14 +827,14 @@ def _run_manual(
                     issue_number=issue.number,
                     phase="pr_opened",
                     actor="coordinator",
-                    detail=str(outcome.get("summary") or "Draft PR opened"),
-                    pr_url=str(outcome.get("pr_url") or ""),
+                    detail=str(issue_outcome.get("summary") or "Draft PR opened"),
+                    pr_url=str(issue_outcome.get("pr_url") or ""),
                 )
                 continue
             if status == "needs_input":
-                summary = str(outcome.get("summary") or "").strip()
-                question = str(outcome.get("question") or "").strip()
-                raw_options = outcome.get("options") or []
+                summary = str(issue_outcome.get("summary") or "").strip()
+                question = str(issue_outcome.get("question") or "").strip()
+                raw_options = issue_outcome.get("options") or []
                 options = [
                     str(option).strip()
                     for option in raw_options
@@ -816,6 +864,8 @@ def _run_manual(
                     blocked_label,
                     blocked=True,
                 )
+                pass_outcome["asked"] += 1
+                pass_outcome["blocked"] += 1
                 _update_progress(
                     repo_root,
                     config,
@@ -826,7 +876,7 @@ def _run_manual(
                     detail=question,
                 )
             elif status == "failed":
-                summary = str(outcome.get("summary") or "Agent run failed.").strip()
+                summary = str(issue_outcome.get("summary") or "Agent run failed.").strip()
                 comment_issue(
                     github_repo,
                     issue.number,
@@ -855,7 +905,10 @@ def _run_manual(
             )
             claimed.remove(issue)
         _finish_progress_run(repo_root, config, run_id, success=True)
-    except (Exception, KeyboardInterrupt):
+        _write_pass_outcome(repo_root, config, pass_outcome)
+    except (Exception, KeyboardInterrupt) as exc:
+        pass_outcome["error"] = str(exc)[:300]
+        _write_pass_outcome(repo_root, config, pass_outcome)
         _finish_progress_run(repo_root, config, run_id, success=False)
         restore_failures = []
         for issue in claimed:
@@ -878,7 +931,8 @@ def _run_manual(
 
 
 def _listener_state_path(repo_root: Path, config: dict) -> Path:
-    state_dir = repo_root / _role(
+    configured_state = os.environ.get("TICKET_LOOP_STATE_DIR", "").strip()
+    state_dir = Path(configured_state) if configured_state else repo_root / _role(
         config, ("runtime", "state_dir"), ".local/agent-loop"
     )
     return state_dir / "listener.json"
