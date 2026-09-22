@@ -3,7 +3,13 @@ import json
 import subprocess
 import unittest
 
-from github_issues import GitHubAdapterError, list_actionable, set_claimed
+from github_issues import (
+    GitHubAdapterError,
+    comment_issue,
+    list_actionable,
+    set_blocked,
+    set_claimed,
+)
 
 
 class GitHubIssuesTests(unittest.TestCase):
@@ -99,6 +105,37 @@ class GitHubIssuesTests(unittest.TestCase):
         self.assertEqual(
             captured[0][captured[0].index("--remove-label") + 1], "agent-claimed"
         )
+
+    def test_block_and_unblock_use_configured_label(self):
+        captured = []
+
+        def runner(command, **kwargs):
+            captured.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        set_blocked(
+            "acme/repo", 42, "agent-blocked", blocked=True, runner=runner
+        )
+        set_blocked(
+            "acme/repo", 42, "agent-blocked", blocked=False, runner=runner
+        )
+
+        self.assertIn("--add-label", captured[0])
+        self.assertIn("agent-blocked", captured[0])
+        self.assertIn("--remove-label", captured[1])
+        self.assertIn("agent-blocked", captured[1])
+
+    def test_comment_persists_question_or_answer_on_issue(self):
+        captured = []
+
+        def runner(command, **kwargs):
+            captured.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        comment_issue("acme/repo", 42, "Answer from Telegram", runner=runner)
+
+        self.assertEqual(captured[0][:3], ["gh", "issue", "comment"])
+        self.assertEqual(captured[0][captured[0].index("--body") + 1], "Answer from Telegram")
 
 
 if __name__ == "__main__":

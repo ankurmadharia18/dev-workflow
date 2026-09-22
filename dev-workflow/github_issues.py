@@ -126,3 +126,58 @@ def set_claimed(
         raise GitHubAdapterError(
             "Could not %s GitHub issue #%d: %s" % (action, issue_number, detail)
         )
+
+
+def set_blocked(
+    repo: str,
+    issue_number: int,
+    blocked_label: str,
+    *,
+    blocked: bool,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> None:
+    """Apply or remove the configured human-clarification hold label."""
+    action = "--add-label" if blocked else "--remove-label"
+    command = [
+        "gh",
+        "issue",
+        "edit",
+        str(issue_number),
+        "--repo",
+        repo,
+        action,
+        blocked_label,
+    ]
+    completed = runner(command, capture_output=True, text=True)
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "unknown gh error").strip()
+        verb = "block" if blocked else "unblock"
+        raise GitHubAdapterError(
+            "Could not %s GitHub issue #%d: %s" % (verb, issue_number, detail)
+        )
+
+
+def comment_issue(
+    repo: str,
+    issue_number: int,
+    body: str,
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> None:
+    """Persist a clarification question or answer on its GitHub issue."""
+    command = [
+        "gh",
+        "issue",
+        "comment",
+        str(issue_number),
+        "--repo",
+        repo,
+        "--body",
+        body,
+    ]
+    completed = runner(command, capture_output=True, text=True)
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "unknown gh error").strip()
+        raise GitHubAdapterError(
+            "Could not comment on GitHub issue #%d: %s" % (issue_number, detail)
+        )
