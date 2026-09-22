@@ -16,7 +16,7 @@ repo:
 
 # The issue tracker — the adapter seam. See tracker-adapters.md for the verbs.
 tracker:
-  provider: linear                # linear | github (GitHub Phase 1 is read-only planning)
+  provider: linear                # linear | github (GitHub supports local build + draft PR passes)
   # repo: your-org/your-repo      # REQUIRED when provider is github
   team: Acme                      # the tracker team/workspace name
   ticket_prefix: ABC              # ticket keys look like ABC-123
@@ -38,7 +38,7 @@ tracker:
                                   # (which stays unset in a parent config).
   roles:                          # map framework roles -> your board's own label/state names
     queue:   { label: agent, states: [Todo, In Progress] }   # the loop picks up work here
-    # claimed: { label: agent-claimed }                      # GitHub manual runner ownership
+    # claimed: { label: agent-claimed }                      # GitHub runner ownership
     blocked: { label: agent-blocked }                        # set when a ticket needs a human ANSWER
     exclude: { labels: [manual, gated, decision] }           # never auto-worked
     done:    { state: Done }                                  # set when the PR merges

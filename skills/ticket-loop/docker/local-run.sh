@@ -14,10 +14,14 @@
 #   CLAUDE_PIN   the claude version to bake (REQUIRED for `build` — no default)
 #   IMAGE        image tag        (default: dev-workflow-agent:local)
 #   VOLUME       docker volume    (default: dev-workflow-agent-local)
+#   CONTAINER    orchestrator name (default: dw-orchestrator)
+#   CONTAINER_TZ container log zone (default: Asia/Kolkata)
 set -euo pipefail
 
 IMAGE="${IMAGE:-dev-workflow-agent:local}"
 VOLUME="${VOLUME:-dev-workflow-agent-local}"
+CONTAINER="${CONTAINER:-dw-orchestrator}"
+CONTAINER_TZ="${CONTAINER_TZ:-Asia/Kolkata}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"       # skills/ticket-loop/docker -> repo root
@@ -35,12 +39,20 @@ Usage: $0 <command> [args]
                                  /home/agent/<name>. Idempotent (skips if .git exists).
   put-env <local-file>           Copy a local env file into the volume as
                                  /home/agent/agent.env (mode 600). Never prints it.
+  put-project-env <name> <file>  Copy one tenant's secrets as /home/agent/<name>.env.
+  put-roster <local-file>        Copy roster.yml into the volume.
+  put-orch-env <local-file>      Copy orchestrator secrets as /home/agent/orch.env.
   dry-run <name>                 Run ONE pass with --dry-run: no sends, no builds.
   pass <name> --yes              Run ONE REAL pass. Acts on the real tracker/chat/GitHub.
                                  Requires --yes; stop every other loop for this repo first.
+  orchestrator-up               Start the upstream daemon with restart=unless-stopped.
+  orchestrator-status           Show container and project scheduler status.
+  orchestrator-logs             Follow the daemon logs.
+  run-now [name]                Wake one enabled project (or the next project).
+  orchestrator-down             Stop the daemon without removing its volume.
   clean                          Remove the volume and the local image (asks first).
 
-Env: CLAUDE_PIN (build), IMAGE, VOLUME.
+Env: CLAUDE_PIN (build), IMAGE, VOLUME, CONTAINER, CONTAINER_TZ.
 EOF
 }
 
@@ -51,6 +63,24 @@ need_docker() {
 }
 
 volume_exists() { docker volume inspect "$VOLUME" >/dev/null 2>&1; }
+
+validate_project_name() {
+  local name="$1"
+  case "$name" in
+    ""|*[!A-Za-z0-9._-]*)
+      echo "ERROR: project name must contain only letters, numbers, dot, underscore, or hyphen" >&2
+      exit 1
+      ;;
+  esac
+}
+
+ensure_volume_layout() {
+  volume_exists || { echo "ERROR: volume $VOLUME does not exist" >&2; exit 1; }
+  docker run --rm -v "$VOLUME":/home/agent "$NODE_IMAGE" \
+    bash -lc 'mkdir -p /home/agent/.cache/uv /home/agent/orch /home/agent/state && \
+      chown 10001:10001 /home/agent /home/agent/.cache /home/agent/.cache/uv \
+        /home/agent/orch /home/agent/state'
+}
 
 # --- subcommands -----------------------------------------------------------
 
@@ -73,7 +103,9 @@ cmd_seed() {
     echo "ERROR: usage: $0 seed <repo-url> <branch> <name>" >&2
     exit 1
   fi
+  validate_project_name "$name"
   volume_exists || { echo "Creating volume $VOLUME ..."; docker volume create "$VOLUME"; }
+  ensure_volume_layout
   if docker run --rm -v "$VOLUME":/home/agent "$NODE_IMAGE" \
        test -d "/home/agent/$name/.git"; then
     echo "Already seeded: /home/agent/$name (has .git) — skipping clone."
@@ -100,11 +132,102 @@ cmd_put_env() {
     exit 1
   fi
   volume_exists || { echo "ERROR: volume $VOLUME does not exist — run 'seed' first" >&2; exit 1; }
+  ensure_volume_layout
   # Piped over stdin; the contents are never echoed to the terminal.
   docker run --rm -i -v "$VOLUME":/home/agent "$NODE_IMAGE" \
     bash -lc 'cat > /home/agent/agent.env && chmod 600 /home/agent/agent.env && \
       chown 10001:10001 /home/agent/agent.env' < "$file"
   echo "Wrote /home/agent/agent.env (mode 600) into $VOLUME."
+}
+
+put_volume_file() {
+  local file="$1" destination="$2" mode="${3:-600}"
+  [ -f "$file" ] || { echo "ERROR: file not found: $file" >&2; exit 1; }
+  volume_exists || { echo "ERROR: volume $VOLUME does not exist — run 'seed' first" >&2; exit 1; }
+  ensure_volume_layout
+  docker run --rm -i -v "$VOLUME":/home/agent "$NODE_IMAGE" \
+    bash -lc "cat > '/home/agent/$destination' && chmod '$mode' '/home/agent/$destination' && chown 10001:10001 '/home/agent/$destination'" < "$file"
+  echo "Wrote /home/agent/$destination (mode $mode) into $VOLUME."
+}
+
+cmd_put_project_env() {
+  local name="${1:-}" file="${2:-}"
+  [ -n "$name" ] && [ -n "$file" ] || {
+    echo "ERROR: usage: $0 put-project-env <name> <local-file>" >&2; exit 1;
+  }
+  validate_project_name "$name"
+  put_volume_file "$file" "$name.env" 600
+}
+
+cmd_put_roster() {
+  local file="${1:-}"
+  [ -n "$file" ] || { echo "ERROR: usage: $0 put-roster <local-file>" >&2; exit 1; }
+  put_volume_file "$file" roster.yml 600
+}
+
+cmd_put_orch_env() {
+  local file="${1:-}"
+  [ -n "$file" ] || { echo "ERROR: usage: $0 put-orch-env <local-file>" >&2; exit 1; }
+  put_volume_file "$file" orch.env 600
+}
+
+container_exists() { docker container inspect "$CONTAINER" >/dev/null 2>&1; }
+
+cmd_orchestrator_up() {
+  need_docker
+  volume_exists || { echo "ERROR: volume $VOLUME does not exist — run 'seed' first" >&2; exit 1; }
+  ensure_volume_layout
+  if container_exists; then
+    if [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER")" = true ]; then
+      echo "$CONTAINER is already running."
+    else
+      docker start "$CONTAINER" >/dev/null
+      echo "Started existing $CONTAINER."
+    fi
+    return 0
+  fi
+  docker run -d --name "$CONTAINER" --init --restart unless-stopped \
+    -v "$VOLUME":/home/agent \
+    -e TZ="$CONTAINER_TZ" \
+    "$IMAGE" /opt/dev-workflow/bin/orchestrator.sh >/dev/null
+  echo "Started $CONTAINER with restart=unless-stopped (timezone $CONTAINER_TZ)."
+}
+
+cmd_orchestrator_status() {
+  need_docker
+  container_exists || { echo "$CONTAINER does not exist."; return 1; }
+  docker ps -a --filter "name=^/${CONTAINER}$" --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
+  if [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER")" = true ]; then
+    docker exec "$CONTAINER" python3 /opt/dev-workflow/bin/orch.py status \
+      --roster /home/agent/roster.yml --state /home/agent/orch/orch-state.json
+  fi
+}
+
+cmd_orchestrator_logs() {
+  need_docker
+  container_exists || { echo "$CONTAINER does not exist." >&2; return 1; }
+  docker logs -f "$CONTAINER"
+}
+
+cmd_run_now() {
+  need_docker
+  local name="${1:-}"
+  container_exists || { echo "$CONTAINER does not exist." >&2; return 1; }
+  if [ -n "$name" ]; then
+    validate_project_name "$name"
+    docker exec "$CONTAINER" bash -lc "printf '%s\\n' '$name' > /home/agent/orch/run-now"
+    echo "Queued an immediate pass for $name."
+  else
+    docker exec "$CONTAINER" bash -lc ': > /home/agent/orch/run-now'
+    echo "Queued an immediate pass for the next eligible project."
+  fi
+}
+
+cmd_orchestrator_down() {
+  need_docker
+  container_exists || { echo "$CONTAINER does not exist."; return 0; }
+  docker stop "$CONTAINER" >/dev/null
+  echo "Stopped $CONTAINER. Volume $VOLUME was preserved."
 }
 
 # Run one pass. $1=name, $2="--dry-run" for the safe pass (empty for a real one).
@@ -122,6 +245,7 @@ _run_pass() {
 cmd_dry_run() {
   local name="${1:-}"
   [ -n "$name" ] || { echo "ERROR: usage: $0 dry-run <name>" >&2; exit 1; }
+  validate_project_name "$name"
   echo "Dry-run pass for /home/agent/$name (no sends, no builds) ..."
   _run_pass "$name" --dry-run
 }
@@ -136,6 +260,7 @@ cmd_pass() {
     esac
   done
   [ -n "$name" ] || { echo "ERROR: usage: $0 pass <name> --yes" >&2; exit 1; }
+  validate_project_name "$name"
   cat <<'WARN' >&2
 ========================================================================
   WARNING: this is a REAL ticket-loop pass, not a dry run.
@@ -177,8 +302,16 @@ main() {
     build)    cmd_build "$@" ;;
     seed)     cmd_seed "$@" ;;
     put-env)  cmd_put_env "$@" ;;
+    put-project-env) cmd_put_project_env "$@" ;;
+    put-roster) cmd_put_roster "$@" ;;
+    put-orch-env) cmd_put_orch_env "$@" ;;
     dry-run)  cmd_dry_run "$@" ;;
     pass)     cmd_pass "$@" ;;
+    orchestrator-up) cmd_orchestrator_up "$@" ;;
+    orchestrator-status) cmd_orchestrator_status "$@" ;;
+    orchestrator-logs) cmd_orchestrator_logs "$@" ;;
+    run-now) cmd_run_now "$@" ;;
+    orchestrator-down) cmd_orchestrator_down "$@" ;;
     clean)    cmd_clean "$@" ;;
     -h|--help|help) usage ;;
     *) echo "ERROR: unknown command: $cmd" >&2; usage; exit 1 ;;

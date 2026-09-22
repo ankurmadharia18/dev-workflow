@@ -30,7 +30,7 @@ orch.py next            → run <project>, or sleep to min(next_eligible);
                           is already drained
   memory gate           → MemAvailable < 2.5 GiB? skip turn (short requeue)
   window                → roster window ∩ repo schedule.window (skip ≠ ladder)
-pre-check (adaptive)    → queue-count.py (Linear depth) + telegram.py peek
+pre-check (adaptive)    → queue-count.py (Linear or GitHub depth) + telegram.py peek
                           (read-only) — both idle? back off. Open questions are
                           NOT a signal: an answer IS a pending message the peek
                           sees, so an unanswered question costs zero passes

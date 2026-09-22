@@ -9,6 +9,7 @@ import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 HERE = Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location("queue_count", HERE / "queue-count.py")
@@ -105,6 +106,40 @@ class TestCountEligible(unittest.TestCase):
 
     def test_empty(self):
         self.assertEqual(qc.count_eligible(self.body([]), ["manual"]), 0)
+
+
+class TestProviderDispatch(unittest.TestCase):
+    def test_missing_provider_preserves_linear_default(self):
+        data, mod = load_cfg()
+        self.assertEqual(qc.read_provider(data, mod), "linear")
+
+    def test_reads_github_roles(self):
+        data, mod = load_cfg(
+            "tracker:\n"
+            "  provider: github\n"
+            "  repo: acme/widgets\n"
+            "  roles:\n"
+            "    queue: { label: agent-ready, states: [open] }\n"
+            "    exclude: { labels: [agent-claimed, agent-blocked] }\n"
+        )
+        self.assertEqual(qc.read_provider(data, mod), "github")
+        self.assertEqual(
+            qc.read_github_roles(data, mod),
+            ("acme/widgets", "agent-ready", ["agent-claimed", "agent-blocked"]),
+        )
+
+    def test_github_count_reuses_actionable_adapter(self):
+        data, mod = load_cfg(
+            "tracker:\n"
+            "  provider: github\n"
+            "  repo: acme/widgets\n"
+            "  roles:\n"
+            "    queue: { label: agent-ready, states: [open] }\n"
+            "    exclude: { labels: [agent-claimed] }\n"
+        )
+        with patch.object(qc, "list_actionable", return_value=[object(), object()]) as lookup:
+            self.assertEqual(qc.count_github(data, mod), 2)
+        lookup.assert_called_once_with("acme/widgets", "agent-ready", ["agent-claimed"])
 
 
 if __name__ == "__main__":

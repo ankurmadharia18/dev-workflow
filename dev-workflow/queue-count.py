@@ -2,10 +2,9 @@
 """Cheap tracker queue-depth pre-check for the ticket-loop orchestrator.
 
 Implements the read-only `queue_count` verb of the tracker-adapter seam for
-Linear: count the actionable tickets — queue label + queue states, minus any
-exclude label — using the SAME eligibility definition as `list_actionable`
-(see tracker-adapters.md; one source of truth, so the pre-check can't silently
-drift from what a real pass would pick up).
+Linear and GitHub Issues: count actionable tickets using the SAME eligibility
+definition as `list_actionable` (see tracker-adapters.md; one source of truth,
+so the pre-check cannot silently drift from what a real pass would pick up).
 
     LINEAR_API_KEY=lin_api_...  queue-count.py --config <work_tree>/dev-workflow.yml
 
@@ -13,7 +12,7 @@ Prints a bare integer on stdout (exit 0). ANY failure — missing key, bad
 config, network error, GraphQL error — exits non-zero with a message on
 stderr; the orchestrator treats that as "fail open" and runs the pass.
 
-Stdlib only (urllib). Config parsing is delegated to the sibling dw-config.py
+Config parsing is delegated to the sibling dw-config.py
 (same directory in both layouts: dev-workflow/ in the repo, /opt/dev-workflow/bin
 in the image), so the YAML handling — PyYAML with a stdlib fallback — is never
 duplicated.
@@ -27,6 +26,8 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+from github_issues import GitHubAdapterError, list_actionable
 
 LINEAR_URL = "https://api.linear.app/graphql"
 
@@ -96,15 +97,52 @@ def count_eligible(body, exclude_labels):
     return n
 
 
+def read_provider(data, mod):
+    provider = mod.get(data, "tracker.provider")
+    if provider is mod._MISSING:
+        return "linear"
+    provider = str(provider).strip().lower()
+    if provider not in {"linear", "github"}:
+        sys.exit(f"error: unsupported tracker.provider: {provider}")
+    return provider
+
+
+def read_github_roles(data, mod):
+    repo = mod.get(data, "tracker.repo")
+    queue = mod.get(data, "tracker.roles.queue")
+    if repo is mod._MISSING or queue is mod._MISSING or not isinstance(queue, dict):
+        sys.exit("error: tracker.repo / tracker.roles.queue missing in config")
+    label = queue.get("label")
+    if not label:
+        sys.exit("error: tracker.roles.queue needs `label`")
+    exclude = mod.get(data, "tracker.roles.exclude")
+    excludes = []
+    if isinstance(exclude, dict) and isinstance(exclude.get("labels"), list):
+        excludes = [str(x) for x in exclude["labels"]]
+    return str(repo), str(label), excludes
+
+
+def count_github(data, mod):
+    repo, label, excludes = read_github_roles(data, mod)
+    try:
+        return len(list_actionable(repo, label, excludes))
+    except GitHubAdapterError as exc:
+        sys.exit(f"error: {exc}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", required=True, help="path to dev-workflow.yml")
     args = ap.parse_args()
+    data, mod = load_config(args.config)
+    provider = read_provider(data, mod)
+    if provider == "github":
+        print(count_github(data, mod))
+        return
     key = os.environ.get("LINEAR_API_KEY", "").strip()
     if not key:
         sys.exit("error: LINEAR_API_KEY is not set")
-    data, mod = load_config(args.config)
     team, label, states, excludes, project = read_roles(data, mod)
     req = urllib.request.Request(
         LINEAR_URL,

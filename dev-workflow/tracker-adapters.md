@@ -2,10 +2,10 @@
 
 The skills and the autonomous loop never talk to a tracker directly. They
 talk in **canonical verbs**, and a thin per-provider adapter maps each verb
-onto that tracker's API. Linear has the full implementation via its MCP
-server. GitHub Issues currently implements `list_actionable` plus one narrowly
-scoped mutation for manual execution: ready-to-claimed ownership, with rollback
-to ready when the Claude process fails.
+onto that tracker's API. Linear has the full skill implementation via its MCP
+server. GitHub Issues implements the local build path used by both the manual
+command and the Docker orchestrator: actionable selection, queue counting,
+reversible ownership, clarification comments/labels, PR lookup and status.
 
 **One hard rule: state and label names always come from `tracker.roles` in
 `dev-workflow.yml`.** A skill must never hardcode `agent`, `Todo`, `Done`,
@@ -77,15 +77,24 @@ To wire a second tracker, add its name to `KNOWN_TRACKERS` in `validate.py`
 and write a mapping table like the one above — implement each canonical verb,
 resolving every state/label from `tracker.roles`, never hardcoding names.
 
-## GitHub Issues mapping (Phase 1: manual local execution)
+## GitHub Issues mapping (Phase 1: local build execution)
 
 The implemented Phase 1 adapter is `github_issues.py`. It shells out to the
 authenticated `gh` CLI. `list_actionable` returns open issues with the
 configured queue label, minus issues with an excluded label, oldest first.
-Planning is read-only. A manual `run` swaps ready for claimed before Claude
-starts and restores ready if Claude exits unsuccessfully.
+`queue_count` calls that same function, so the upstream orchestrator's cheap
+pre-check cannot disagree with a real pass. Planning is read-only. A real run
+swaps ready for claimed before Claude starts and restores ready if Claude exits
+unsuccessfully. The same run can ask a Telegram clarification, add/remove the
+configured blocked label, inspect the conventional issue PR and open a draft PR.
 
-The remaining mapping for a later, explicitly approved phase is:
+The provider dispatch lives in the upstream runner: `cron-run.sh` invokes the
+canonical `/ticket-loop` skill for Linear and the GitHub-aware
+`dw_ticket_loop.py` executor for `tracker.provider: github`. Both emit the same
+`outcome.json` contract, so scheduling, locking, Telegram ingress, retries,
+backoff and supervision remain provider-neutral.
+
+The remaining full-loop parity for a later phase is:
 
 - **Labels → labels.** The `queue` / `blocked` / `exclude` roles map straight
   onto GitHub issue labels (`roles.queue.label` = e.g. `agent`).

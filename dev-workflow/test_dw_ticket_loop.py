@@ -41,6 +41,54 @@ ISSUE = GitHubIssue(
 
 
 class ManualRunTests(unittest.TestCase):
+    def test_orchestrated_outcome_is_atomic_and_uses_external_state_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / "state"
+            payload = {
+                "picked": 1,
+                "pr_opened": 1,
+                "asked": 0,
+                "blocked": 0,
+                "progressed": True,
+                "error": None,
+            }
+            with patch.dict(
+                dw_ticket_loop.os.environ,
+                {"DW_ORCHESTRATED": "1", "TICKET_LOOP_STATE_DIR": str(state)},
+            ):
+                dw_ticket_loop._write_pass_outcome(root, CONFIG, payload)
+            self.assertEqual(json.loads((state / "outcome.json").read_text()), payload)
+            self.assertFalse((state / "outcome.tmp").exists())
+
+    def test_non_orchestrated_run_does_not_write_outcome(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.dict(dw_ticket_loop.os.environ, {}, clear=True):
+                dw_ticket_loop._write_pass_outcome(root, CONFIG, {"picked": 0})
+            self.assertFalse((root / ".agent-loop" / "outcome.json").exists())
+
+    @patch.object(dw_ticket_loop, "_keychain_value")
+    def test_container_telegram_runtime_prefers_environment(self, keychain):
+        config = {
+            "chat": {"provider": "telegram"},
+            "runtime": {"state_dir": ".local/agent-loop"},
+        }
+        with patch.dict(
+            dw_ticket_loop.os.environ,
+            {
+                "TELEGRAM_BOT_TOKEN": "from-env",
+                "AGENT_TELEGRAM_CHAT_ID": "-100123",
+                "TICKET_LOOP_STATE_DIR": "/home/agent/state/widgets",
+            },
+            clear=True,
+        ):
+            _bridge, env = dw_ticket_loop._telegram_runtime(Path("/repo"), config)
+        keychain.assert_not_called()
+        self.assertEqual(env["TELEGRAM_BOT_TOKEN"], "from-env")
+        self.assertEqual(env["AGENT_TELEGRAM_CHAT_ID"], "-100123")
+        self.assertEqual(env["TICKET_LOOP_STATE_DIR"], "/home/agent/state/widgets")
+
     def test_interactive_claude_model_selection_uses_answers(self):
         answers = iter(["sonnet", "opus"])
         coordinator, implementer = dw_ticket_loop._resolve_models(
