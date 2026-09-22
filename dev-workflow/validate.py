@@ -190,7 +190,14 @@ def check(data):
         # model fields, when present, must be non-empty strings (any model id or
         # alias — the runner passes them through to `claude --model` / the Task
         # tool verbatim).
-        for field in ("model", "subagent_model"):
+        for field in (
+            "model",
+            "subagent_model",
+            "codex_model",
+            "codex_model_reasoning_effort",
+            "codex_subagent_model",
+            "codex_subagent_model_reasoning_effort",
+        ):
             if field in build and not _nonempty_str(build[field]):
                 errors.append("build.%s must be a non-empty string" % field)
 

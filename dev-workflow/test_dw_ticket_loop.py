@@ -22,6 +22,10 @@ CONFIG = {
     "build": {
         "model": "claude-fable-5-1",
         "subagent_model": "claude-opus-5",
+        "codex_model": "gpt-6-astra",
+        "codex_model_reasoning_effort": "low",
+        "codex_subagent_model": "gpt-5.6-sol",
+        "codex_subagent_model_reasoning_effort": "medium",
     },
     "agent": {"enabled": True},
 }
@@ -51,7 +55,7 @@ class ManualRunTests(unittest.TestCase):
             dw_ticket_loop._run_manual(Path("/tmp/repo"), config, 1)
 
     @patch.object(dw_ticket_loop, "_selection", return_value=("acme/repo", "agent-ready", []))
-    @patch.object(dw_ticket_loop, "_claude_is_authenticated", return_value=True)
+    @patch.object(dw_ticket_loop, "_engine_is_authenticated", return_value=True)
     def test_empty_queue_does_not_start_claude(self, _auth, _selection):
         with patch.object(dw_ticket_loop.subprocess, "run") as runner:
             self.assertEqual(
@@ -64,7 +68,7 @@ class ManualRunTests(unittest.TestCase):
         "_selection",
         return_value=("acme/repo", "agent-ready", [ISSUE]),
     )
-    @patch.object(dw_ticket_loop, "_claude_is_authenticated", return_value=True)
+    @patch.object(dw_ticket_loop, "_engine_is_authenticated", return_value=True)
     @patch.object(dw_ticket_loop, "set_claimed")
     def test_manual_run_uses_fable_coordinator_and_opus_implementer(
         self, set_claimed_mock, _auth, _selection
@@ -88,7 +92,34 @@ class ManualRunTests(unittest.TestCase):
         "_selection",
         return_value=("acme/repo", "agent-ready", [ISSUE]),
     )
-    @patch.object(dw_ticket_loop, "_claude_is_authenticated", return_value=True)
+    @patch.object(dw_ticket_loop, "_engine_is_authenticated", return_value=True)
+    @patch.object(dw_ticket_loop, "set_claimed")
+    def test_codex_run_uses_astra_low_and_requests_sol_medium_worker(
+        self, _set_claimed, _auth, _selection
+    ):
+        completed = subprocess.CompletedProcess([], 0)
+        with patch.object(dw_ticket_loop.subprocess, "run", return_value=completed) as runner:
+            self.assertEqual(
+                dw_ticket_loop._run_manual(
+                    Path("/tmp/repo"), CONFIG, 1, engine="codex"
+                ),
+                0,
+            )
+
+        command = runner.call_args.args[0]
+        self.assertEqual(command[:2], ["codex", "exec"])
+        self.assertEqual(command[command.index("--model") + 1], "gpt-6-astra")
+        self.assertIn('model_reasoning_effort="low"', command)
+        prompt = command[-1]
+        self.assertIn("`gpt-5.6-sol` at `medium` reasoning", prompt)
+        self.assertIn("If exact-model worker delegation is unavailable", prompt)
+
+    @patch.object(
+        dw_ticket_loop,
+        "_selection",
+        return_value=("acme/repo", "agent-ready", [ISSUE]),
+    )
+    @patch.object(dw_ticket_loop, "_engine_is_authenticated", return_value=True)
     @patch.object(dw_ticket_loop, "set_claimed")
     def test_failed_claude_run_restores_ready_label(
         self, set_claimed_mock, _auth, _selection

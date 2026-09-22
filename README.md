@@ -144,6 +144,19 @@ Claude coordinator with:
 dw-ticket-loop run <repo-path-or-name> --max 3
 ```
 
+Choose the coordinator harness explicitly when needed:
+
+```
+dw-ticket-loop run <repo-path-or-name> --engine claude --max 3
+dw-ticket-loop run <repo-path-or-name> --engine codex --max 3
+```
+
+The Codex profile reads its coordinator/implementer model and reasoning settings
+from `build.codex_*`. For example, `gpt-6-astra` with `low` reasoning can
+coordinate fresh `gpt-5.6-sol` workers at `medium` reasoning. If the Codex
+coordinator cannot delegate to that exact worker profile, it must stop before
+editing rather than silently implement with the wrong model.
+
 `run` requires `agent.enabled: true`, moves selected issues from the ready
 label to the claimed label, and restores them if Claude fails. The generated
 instructions allow only feature-branch pushes and draft PR creation for human

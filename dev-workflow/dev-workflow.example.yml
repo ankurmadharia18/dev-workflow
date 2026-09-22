@@ -126,6 +126,11 @@ guardrails:
 build:
   model: sonnet                  # model id the loop pins each headless pass to
   subagent_model: sonnet         # implementation subagents; omit = inherit `model`
+  # Optional Codex manual-run profile (`dw-ticket-loop run --engine codex`):
+  # codex_model: gpt-6-astra
+  # codex_model_reasoning_effort: low
+  # codex_subagent_model: gpt-5.6-sol
+  # codex_subagent_model_reasoning_effort: medium
   cap_per_pass: 3                # max tickets built per loop pass
 
 # v2 opt-in: the LOCAL autonomous agent tier (the `ticket-loop` skill + its
