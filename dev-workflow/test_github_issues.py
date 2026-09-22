@@ -7,6 +7,7 @@ from github_issues import (
     GitHubAdapterError,
     add_label,
     comment_issue,
+    find_issue_pull_request,
     get_issue,
     list_actionable,
     set_blocked,
@@ -78,6 +79,45 @@ class GitHubIssuesTests(unittest.TestCase):
         self.assertEqual(issue.number, 42)
         self.assertEqual(issue.labels, ("security",))
         self.assertEqual(issue.state, "OPEN")
+
+    def test_finds_issue_pr_and_summarizes_checks(self):
+        payload = [
+            {
+                "number": 77,
+                "title": "Fix it",
+                "url": "https://github.com/acme/repo/pull/77",
+                "state": "OPEN",
+                "isDraft": True,
+                "mergeStateStatus": "CLEAN",
+                "statusCheckRollup": [
+                    {"conclusion": "SUCCESS"},
+                    {"state": "PENDING"},
+                    {"conclusion": "FAILURE"},
+                ],
+            }
+        ]
+
+        def runner(command, **kwargs):
+            self.assertEqual(command[:3], ["gh", "pr", "list"])
+            self.assertEqual(command[command.index("--head") + 1], "codex/issue-42")
+            return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+        pull = find_issue_pull_request("acme/repo", 42, runner=runner)
+        self.assertIsNotNone(pull)
+        self.assertEqual(pull.number, 77)
+        self.assertTrue(pull.is_draft)
+        self.assertEqual(
+            (pull.checks_passed, pull.checks_pending, pull.checks_failed),
+            (1, 1, 1),
+        )
+
+    def test_missing_issue_pr_returns_none(self):
+        completed = subprocess.CompletedProcess([], 0, "[]", "")
+        self.assertIsNone(
+            find_issue_pull_request(
+                "acme/repo", 42, runner=lambda *_args, **_kwargs: completed
+            )
+        )
 
     def test_add_label_uses_configured_label(self):
         captured = []

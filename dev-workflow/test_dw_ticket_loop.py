@@ -2,11 +2,12 @@
 import json
 from pathlib import Path
 import subprocess
+import tempfile
 import unittest
 from unittest.mock import patch
 
 import dw_ticket_loop
-from github_issues import GitHubIssue
+from github_issues import GitHubIssue, GitHubPullRequest
 
 
 CONFIG = {
@@ -83,6 +84,14 @@ class ManualRunTests(unittest.TestCase):
         self.assertIn("open a DRAFT pull request", prompt)
         self.assertIn("Do NOT merge a PR, deploy", prompt)
         self.assertIn("directly to `main`", prompt)
+
+    def test_prompt_requires_live_coordinator_and_implementer_progress(self):
+        prompt = dw_ticket_loop._manual_prompt(
+            Path("/tmp/repo"), "acme/repo", [ISSUE], CONFIG
+        )
+        self.assertIn("Live progress reporting is mandatory", prompt)
+        self.assertIn("--actor <coordinator|implementer>", prompt)
+        self.assertIn("this exact progress command and requirement", prompt)
 
     def test_claude_outcomes_are_read_from_structured_output(self):
         output = json.dumps(
@@ -323,6 +332,61 @@ class ManualRunTests(unittest.TestCase):
             dw_ticket_loop._parse_models_command("models opus opus"),
             ("opus", "opus"),
         )
+
+    def test_status_command_accepts_issue_numbers_and_rejects_bad_syntax(self):
+        self.assertEqual(dw_ticket_loop._parse_status_command("Status"), [])
+        self.assertEqual(
+            dw_ticket_loop._parse_status_command("status #995 996"), [995, 996]
+        )
+        with self.assertRaisesRegex(ValueError, "Use: status"):
+            dw_ticket_loop._parse_status_command("status agents")
+
+    def test_progress_ledger_persists_implementer_phase_and_finishes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            config = {"runtime": {"state_dir": ".local/agent-loop"}}
+            run_id = dw_ticket_loop._begin_progress_run(
+                repo, config, [ISSUE], "opus", "opus"
+            )
+            self.assertTrue(
+                dw_ticket_loop._update_progress(
+                    repo,
+                    config,
+                    run_id=run_id,
+                    issue_number=42,
+                    phase="testing",
+                    actor="implementer",
+                    detail="Running the focused widget tests",
+                )
+            )
+            dw_ticket_loop._finish_progress_run(
+                repo, config, run_id, success=True
+            )
+            progress = dw_ticket_loop._read_progress(repo, config)
+
+        self.assertEqual(progress["status"], "completed")
+        self.assertEqual(progress["coordinator"]["status"], "completed")
+        self.assertEqual(progress["issues"]["42"]["phase"], "testing")
+        self.assertEqual(progress["issues"]["42"]["actor"], "implementer")
+
+    @patch.object(dw_ticket_loop, "find_issue_pull_request")
+    @patch.object(dw_ticket_loop, "get_issue")
+    def test_issue_status_renders_ticket_pr_and_checks(self, issue_mock, pull_mock):
+        issue_mock.return_value = ISSUE
+        pull_mock.return_value = GitHubPullRequest(
+            number=77,
+            title="Fix the widget",
+            url="https://github.com/acme/repo/pull/77",
+            state="OPEN",
+            is_draft=True,
+            merge_state_status="CLEAN",
+            checks_passed=2,
+            checks_pending=1,
+        )
+        rendered = dw_ticket_loop._github_issue_status("acme/repo", 42)
+        self.assertIn("OPEN · agent-ready", rendered)
+        self.assertIn("Draft PR #77: OPEN · CLEAN", rendered)
+        self.assertIn("1 pending, 2 passed", rendered)
 
     @patch.object(dw_ticket_loop, "_selection", return_value=("acme/repo", "agent-ready", []))
     @patch.object(dw_ticket_loop, "_engine_is_authenticated", return_value=True)

@@ -27,6 +27,19 @@ class GitHubIssue:
     state: str = "OPEN"
 
 
+@dataclass(frozen=True)
+class GitHubPullRequest:
+    number: int
+    title: str
+    url: str
+    state: str
+    is_draft: bool
+    merge_state_status: str
+    checks_passed: int = 0
+    checks_pending: int = 0
+    checks_failed: int = 0
+
+
 def _label_names(raw_labels: Iterable[object]) -> tuple[str, ...]:
     names = []
     for label in raw_labels:
@@ -132,6 +145,70 @@ def get_issue(
         created_at=str(raw.get("createdAt", "")),
         labels=_label_names(raw.get("labels", [])),
         state=str(raw.get("state", "OPEN")),
+    )
+
+
+def find_issue_pull_request(
+    repo: str,
+    issue_number: int,
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> GitHubPullRequest | None:
+    """Read the newest PR for the ticket loop's conventional issue branch."""
+    command = [
+        "gh",
+        "pr",
+        "list",
+        "--repo",
+        repo,
+        "--head",
+        "codex/issue-%d" % issue_number,
+        "--state",
+        "all",
+        "--limit",
+        "1",
+        "--json",
+        "number,title,url,state,isDraft,mergeStateStatus,statusCheckRollup",
+    ]
+    completed = runner(command, capture_output=True, text=True)
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "unknown gh error").strip()
+        raise GitHubAdapterError(
+            "Could not read PR for issue #%d: %s" % (issue_number, detail)
+        )
+    try:
+        payload = json.loads(completed.stdout or "[]")
+    except json.JSONDecodeError as exc:
+        raise GitHubAdapterError("GitHub PR lookup returned invalid JSON") from exc
+    if not isinstance(payload, list):
+        raise GitHubAdapterError("GitHub PR lookup returned an unexpected payload")
+    if not payload:
+        return None
+    raw = payload[0]
+    if not isinstance(raw, dict) or not raw.get("number"):
+        raise GitHubAdapterError("GitHub PR lookup returned an unexpected payload")
+
+    passed = pending = failed = 0
+    for check in raw.get("statusCheckRollup") or []:
+        if not isinstance(check, dict):
+            continue
+        state = str(check.get("conclusion") or check.get("state") or "").upper()
+        if state in {"SUCCESS", "NEUTRAL", "SKIPPED"}:
+            passed += 1
+        elif state in {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT"}:
+            failed += 1
+        else:
+            pending += 1
+    return GitHubPullRequest(
+        number=int(raw["number"]),
+        title=str(raw.get("title") or ""),
+        url=str(raw.get("url") or ""),
+        state=str(raw.get("state") or "UNKNOWN"),
+        is_draft=bool(raw.get("isDraft")),
+        merge_state_status=str(raw.get("mergeStateStatus") or "UNKNOWN"),
+        checks_passed=passed,
+        checks_pending=pending,
+        checks_failed=failed,
     )
 
 
