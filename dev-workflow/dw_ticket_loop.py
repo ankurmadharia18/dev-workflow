@@ -170,8 +170,9 @@ Required verification when relevant:
 - tests: {test_command or 'determine the narrow relevant tests'}
 - lint/typecheck: {lint_command or 'determine the narrow relevant checks'}
 
-Finish with one structured outcome per issue: issue number, status, concise
-summary, exact human question (or empty), and draft PR URL (or empty).
+Finish with only one JSON object matching the requested output schema: one outcome
+per issue with issue number, status, concise summary, exact human question (or
+empty), and draft PR URL (or empty). Do not wrap the JSON in Markdown.
 Use `needs_input` only when a human decision is genuinely required. Stop that
 issue safely, preserve its worktree, and put one self-contained question in
 `question`. Never access Telegram or any credential yourself; the parent runner
@@ -328,6 +329,18 @@ def _load_claude_outcomes(output: str) -> dict[int, dict]:
     except json.JSONDecodeError as exc:
         raise RuntimeError("Claude returned invalid JSON") from exc
     payload = envelope.get("structured_output") if isinstance(envelope, dict) else None
+    if not isinstance(payload, dict) and isinstance(envelope, dict):
+        result = envelope.get("result")
+        if isinstance(result, str):
+            candidate = result.strip()
+            if candidate.startswith("```") and candidate.endswith("```"):
+                candidate = re.sub(r"^```(?:json)?\s*|\s*```$", "", candidate)
+            try:
+                fallback = json.loads(candidate)
+            except json.JSONDecodeError:
+                fallback = None
+            if isinstance(fallback, dict):
+                payload = fallback
     issues = payload.get("issues") if isinstance(payload, dict) else None
     if not isinstance(issues, list):
         raise RuntimeError("Claude response is missing structured issue outcomes")

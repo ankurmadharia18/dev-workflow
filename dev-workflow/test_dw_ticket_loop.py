@@ -103,6 +103,27 @@ class ManualRunTests(unittest.TestCase):
         outcomes = dw_ticket_loop._load_claude_outcomes(output)
         self.assertEqual(outcomes[42]["status"], "needs_input")
 
+    def test_claude_outcomes_fall_back_to_json_result(self):
+        payload = {
+            "issues": [
+                {
+                    "number": 42,
+                    "status": "pr_opened",
+                    "summary": "Draft PR opened.",
+                    "question": "",
+                    "pr_url": "https://github.com/acme/repo/pull/7",
+                }
+            ]
+        }
+        output = json.dumps(
+            {
+                "result": "```json\n%s\n```" % json.dumps(payload),
+                "structured_output": None,
+            }
+        )
+        outcomes = dw_ticket_loop._load_claude_outcomes(output)
+        self.assertEqual(outcomes[42]["pr_url"], payload["issues"][0]["pr_url"])
+
     def test_disabled_agent_refuses_before_auth_or_github_mutation(self):
         config = dict(CONFIG)
         config["agent"] = {"enabled": False}
