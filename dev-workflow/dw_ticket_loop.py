@@ -1243,6 +1243,38 @@ def _render_workflow_status(
     return "\n\n".join(sections)
 
 
+def _render_run_completion(
+    progress: dict, requested_numbers: list[int], *, success: bool
+) -> str:
+    """Render an actionable Telegram completion instead of a generic exit note."""
+    progress_issues = (
+        progress.get("issues") if isinstance(progress.get("issues"), dict) else {}
+    )
+    sections = []
+    for number in requested_numbers:
+        item = progress_issues.get(str(number)) or {}
+        phase = str(item.get("phase") or "")
+        detail = str(item.get("detail") or "").strip()
+        pr_url = str(item.get("pr_url") or "").strip()
+        if not success or phase == "failed":
+            headline = "⚠️ #%d — run failed" % number
+        elif phase == "needs_input":
+            headline = "⏸️ #%d — waiting for your answer" % number
+        elif phase == "pr_opened":
+            headline = "✅ #%d — draft PR ready for review" % number
+        else:
+            headline = "✅ #%d — local pass completed" % number
+        lines = [headline]
+        if detail:
+            lines.append(detail)
+        if pr_url:
+            lines.append(pr_url)
+        sections.append("\n".join(lines))
+    if sections:
+        return "\n\n".join(sections)
+    return "✅ Local pass completed." if success else "⚠️ Local pass failed."
+
+
 def _pid_alive(pid: object) -> bool:
     try:
         os.kill(int(pid), 0)
@@ -1427,15 +1459,12 @@ def _run_listener(repo_root: Path, config: dict) -> int:
                         str(active["run_id"]),
                         success=success,
                     )
+                progress = _read_progress(repo_root, config)
                 _send_telegram_text(
                     bridge,
                     env,
                     repo_root,
-                    "%s Local pass finished for %s."
-                    % (
-                        "✅" if success else "⚠️",
-                        ", ".join("#%s" % number for number in numbers),
-                    ),
+                    _render_run_completion(progress, numbers, success=success),
                 )
                 active_process = None
                 state["active_run"] = None
