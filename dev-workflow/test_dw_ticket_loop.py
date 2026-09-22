@@ -57,6 +57,8 @@ class ManualRunTests(unittest.TestCase):
         self.assertIn("✅ #449 — draft PR ready for review", message)
         self.assertIn("Company-level sharing settings implemented", message)
         self.assertIn("https://github.com/acme/repo/pull/10", message)
+        self.assertIn("\n", message)
+        self.assertNotIn("\\n", message)
 
     def test_completion_message_distinguishes_waiting_and_failure(self):
         waiting = {
