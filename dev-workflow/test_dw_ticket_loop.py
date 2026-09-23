@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -57,6 +58,8 @@ class ManualRunTests(unittest.TestCase):
         self.assertIn("✅ #449 — draft PR ready for review", message)
         self.assertIn("Company-level sharing settings implemented", message)
         self.assertIn("https://github.com/acme/repo/pull/10", message)
+        self.assertIn("\n", message)
+        self.assertNotIn("\\n", message)
 
     def test_completion_message_distinguishes_waiting_and_failure(self):
         waiting = {
@@ -100,6 +103,34 @@ class ManualRunTests(unittest.TestCase):
             ),
             [997],
         )
+
+    @patch.object(dw_ticket_loop.subprocess, "run")
+    def test_listener_router_is_restricted_toolless_and_structured(self, run):
+        payload = {
+            "action": "review_feedback",
+            "issues": [449],
+            "reply": "",
+        }
+        run.return_value = SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"structured_output": payload}),
+        )
+        route = dw_ticket_loop._route_listener_message(
+            {"text": "Please handle the review comments"},
+            {"coordinator": {"model": "fable"}, "issues": {"449": {}}},
+            CONFIG,
+            Path("/repo"),
+        )
+        self.assertEqual(route, payload)
+        command = run.call_args.args[0]
+        self.assertIn("--restricted", command)
+        self.assertIn("--safe-mode", command)
+        self.assertIn("Please handle the review comments", command[2])
+        self.assertIn('"issue": "449"', command[2])
+        self.assertIn("--tools", command)
+        self.assertEqual(command[command.index("--tools") + 1], "")
+        self.assertEqual(command[command.index("--permission-mode") + 1], "plan")
+        self.assertEqual(command[command.index("--permission-prompts") + 1], "none")
 
     def test_unrelated_chatter_is_not_misclassified_as_status(self):
         progress = {"issues": {"449": {"phase": "pr_opened"}}}
