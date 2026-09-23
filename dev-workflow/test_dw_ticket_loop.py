@@ -86,13 +86,12 @@ class ManualRunTests(unittest.TestCase):
         self.assertIn("⚠️ #449 — run failed", message)
         self.assertIn("Typecheck could not complete.", message)
 
-    def test_plain_english_review_question_uses_latest_issue(self):
+    def test_review_evidence_question_is_left_for_natural_language_router(self):
         progress = {"issues": {"449": {"phase": "pr_opened"}}}
-        self.assertEqual(
+        self.assertIsNone(
             dw_ticket_loop._natural_status_numbers(
-                "Review agents also run? PR is raised?", progress
-            ),
-            [449],
+                "Have you run the tests? The reviewer could not run them.", progress
+            )
         )
 
     def test_plain_english_status_question_honors_explicit_issue(self):
@@ -110,6 +109,7 @@ class ManualRunTests(unittest.TestCase):
             "action": "review_feedback",
             "issues": [449],
             "reply": "",
+            "worker_model": "",
         }
         run.return_value = SimpleNamespace(
             returncode=0,
@@ -131,6 +131,26 @@ class ManualRunTests(unittest.TestCase):
         self.assertEqual(command[command.index("--tools") + 1], "")
         self.assertEqual(command[command.index("--permission-mode") + 1], "plan")
         self.assertEqual(command[command.index("--permission-prompts") + 1], "none")
+
+    def test_router_distinguishes_independent_review_and_direct_answers(self):
+        schema = dw_ticket_loop._listener_route_schema()
+        actions = schema["properties"]["action"]["enum"]
+        self.assertIn("independent_review", actions)
+        self.assertIn("answer", actions)
+        prompt = dw_ticket_loop._listener_router_prompt(
+            {"text": "Launch a separate fresh Opus reviewer agent."},
+            {
+                "issues": {
+                    "449": {
+                        "phase": "pr_opened",
+                        "detail": "101 affected tests pass.",
+                    }
+                }
+            },
+        )
+        self.assertIn("fresh independent reviewer is never", prompt)
+        self.assertIn("101 affected tests pass", prompt)
+        self.assertIn("worker_model", prompt)
 
     def test_unrelated_chatter_is_not_misclassified_as_status(self):
         progress = {"issues": {"449": {"phase": "pr_opened"}}}
@@ -251,8 +271,39 @@ class ManualRunTests(unittest.TestCase):
             Path("/tmp/repo"), "acme/repo", [ISSUE], CONFIG
         )
         self.assertIn("Live progress reporting is mandatory", prompt)
-        self.assertIn("--actor <coordinator|implementer>", prompt)
+        self.assertIn("--actor <coordinator|implementer|reviewer>", prompt)
         self.assertIn("this exact progress command and requirement", prompt)
+
+    def test_independent_review_prompt_requires_fresh_read_only_reviewer(self):
+        prompt = dw_ticket_loop._manual_prompt(
+            Path("/tmp/repo"),
+            "acme/repo",
+            [ISSUE],
+            CONFIG,
+            intent="independent-review",
+        )
+        self.assertIn("FRESH INDEPENDENT REVIEW", prompt)
+        self.assertIn("has not participated in implementation", prompt)
+        self.assertIn("run the relevant tests/lint/typecheck", prompt)
+        self.assertIn("Do not edit application code", prompt)
+        self.assertIn("EXISTING draft", prompt)
+
+    def test_independent_review_completion_is_not_called_implementation(self):
+        progress = {
+            "intent": "independent-review",
+            "issues": {
+                "449": {
+                    "phase": "pr_opened",
+                    "detail": "Fresh review found no blocking issues.",
+                    "pr_url": "https://github.com/acme/repo/pull/10",
+                }
+            },
+        }
+        message = dw_ticket_loop._render_run_completion(
+            progress, [449], success=True
+        )
+        self.assertIn("independent review completed", message)
+        self.assertNotIn("draft PR ready", message)
 
     def test_claude_outcomes_are_read_from_structured_output(self):
         output = json.dumps(
