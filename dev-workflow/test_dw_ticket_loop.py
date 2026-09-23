@@ -288,6 +288,65 @@ class ManualRunTests(unittest.TestCase):
         self.assertIn("Do not edit application code", prompt)
         self.assertIn("EXISTING draft", prompt)
 
+    def test_review_prompt_preserves_human_finding_disposition_verbatim(self):
+        steering = (
+            "Fix them\n\n"
+            "Finding 1 is intended behaviour. Do not change the union fallback."
+        )
+        prompt = dw_ticket_loop._manual_prompt(
+            Path("/tmp/repo"),
+            "acme/repo",
+            [ISSUE],
+            CONFIG,
+            intent="review-feedback",
+            request_context=steering,
+        )
+        self.assertIn(steering, prompt)
+        self.assertIn("authoritative for the requested scope", prompt)
+        self.assertIn("Do not replace it with a\nrouter summary", prompt)
+        self.assertIn("reply on the existing PR with the disposition", prompt)
+
+    def test_listener_request_context_keeps_message_before_reply_context(self):
+        context = dw_ticket_loop._listener_request_context(
+            {
+                "text": "Fix all findings except finding 1.",
+                "reply_to_text": "Independent review: six findings",
+                "context": "Issue #449",
+            }
+        )
+        self.assertTrue(context.startswith("Fix all findings except finding 1."))
+        self.assertIn("Reply-to message (context only):", context)
+        self.assertIn("Pending conversation context:", context)
+
+    @patch.object(dw_ticket_loop.subprocess, "Popen")
+    @patch.object(dw_ticket_loop, "_begin_progress_run", return_value="run-42")
+    @patch.object(
+        dw_ticket_loop,
+        "_selection",
+        return_value=("acme/repo", "agent-ready", [ISSUE]),
+    )
+    def test_listener_launch_passes_exact_steering_to_child_environment(
+        self, _selection, _begin, popen
+    ):
+        steering = "Fix them, but finding 1 is intended behaviour."
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            dw_ticket_loop.os.environ,
+            {"TICKET_LOOP_STATE_DIR": str(Path(tmp) / "state")},
+        ):
+            dw_ticket_loop._launch_listener_run(
+                Path(tmp),
+                CONFIG,
+                [42],
+                "fable",
+                "opus",
+                intent="review-feedback",
+                request_context=steering,
+            )
+        command = popen.call_args.args[0]
+        child_env = popen.call_args.kwargs["env"]
+        self.assertEqual(child_env["DW_REQUEST_CONTEXT"], steering)
+        self.assertNotIn(steering, command)
+
     def test_independent_review_completion_is_not_called_implementation(self):
         progress = {
             "intent": "independent-review",
