@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -103,55 +104,51 @@ class ManualRunTests(unittest.TestCase):
             [997],
         )
 
-    def test_review_feedback_instruction_uses_latest_single_issue(self):
-        progress = {"issues": {"449": {"phase": "pr_opened"}}}
-        self.assertEqual(
-            dw_ticket_loop._review_request_numbers(
-                "Check PR reciew comments and ask the implementor to fix them, "
-                "then reply back in the comment",
-                progress,
-            ),
-            [449],
-        )
-
-    def test_review_feedback_instruction_honors_explicit_issue(self):
-        progress = {"issues": {"449": {"phase": "pr_opened"}}}
-        self.assertEqual(
-            dw_ticket_loop._review_request_numbers(
-                "Address the review feedback for #997", progress
-            ),
-            [997],
-        )
-
-    def test_review_feedback_instruction_asks_when_context_is_ambiguous(self):
+    def test_listener_router_prompt_supplies_message_and_recent_context(self):
         progress = {
             "issues": {
-                "449": {"phase": "pr_opened"},
-                "997": {"phase": "pr_opened"},
+                "449": {
+                    "title": "Company sharing settings",
+                    "phase": "pr_opened",
+                    "pr_url": "https://github.com/acme/repo/pull/10",
+                }
             }
         }
-        self.assertEqual(
-            dw_ticket_loop._review_request_numbers(
-                "Check the PR review comments and fix them", progress
-            ),
-            [],
+        prompt = dw_ticket_loop._listener_router_prompt(
+            {
+                "text": "Check PR review comments and ask the implementer to fix them",
+                "reply_to_text": "#449 finished and draft PR is open",
+            },
+            progress,
         )
+        self.assertIn("Check PR review comments", prompt)
+        self.assertIn('"issue": "449"', prompt)
 
-    def test_review_feedback_prompt_maintains_existing_pr(self):
-        prompt = dw_ticket_loop._manual_prompt(
-            Path("/repo"),
-            "acme/repo",
-            [ISSUE],
+    @patch.object(dw_ticket_loop.subprocess, "run")
+    def test_listener_router_is_restricted_toolless_and_structured(self, run):
+        payload = {
+            "action": "review_feedback",
+            "issues": [449],
+            "reply": "",
+        }
+        run.return_value = SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"structured_output": payload}),
+        )
+        route = dw_ticket_loop._route_listener_message(
+            {"text": "Please handle the review comments"},
+            {"coordinator": {"model": "fable"}, "issues": {"449": {}}},
             CONFIG,
-            intent="review-feedback",
+            Path("/repo"),
         )
-        self.assertIn("REVIEW-FEEDBACK maintenance pass", prompt)
-        normalized = " ".join(prompt.split())
-        self.assertIn("Do not reimplement the issue", normalized)
-        self.assertIn(
-            "reply on GitHub to each actionable review comment", normalized
-        )
-        self.assertIn("update the EXISTING draft pull request", normalized)
+        self.assertEqual(route, payload)
+        command = run.call_args.args[0]
+        self.assertIn("--restricted", command)
+        self.assertIn("--safe-mode", command)
+        self.assertIn("--tools", command)
+        self.assertEqual(command[command.index("--tools") + 1], "")
+        self.assertEqual(command[command.index("--permission-mode") + 1], "plan")
+        self.assertEqual(command[command.index("--permission-prompts") + 1], "none")
 
     def test_unrelated_chatter_is_not_misclassified_as_status(self):
         progress = {"issues": {"449": {"phase": "pr_opened"}}}
