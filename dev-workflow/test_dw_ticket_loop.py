@@ -104,26 +104,6 @@ class ManualRunTests(unittest.TestCase):
             [997],
         )
 
-    def test_listener_router_prompt_supplies_message_and_recent_context(self):
-        progress = {
-            "issues": {
-                "449": {
-                    "title": "Company sharing settings",
-                    "phase": "pr_opened",
-                    "pr_url": "https://github.com/acme/repo/pull/10",
-                }
-            }
-        }
-        prompt = dw_ticket_loop._listener_router_prompt(
-            {
-                "text": "Check PR review comments and ask the implementer to fix them",
-                "reply_to_text": "#449 finished and draft PR is open",
-            },
-            progress,
-        )
-        self.assertIn("Check PR review comments", prompt)
-        self.assertIn('"issue": "449"', prompt)
-
     @patch.object(dw_ticket_loop.subprocess, "run")
     def test_listener_router_is_restricted_toolless_and_structured(self, run):
         payload = {
@@ -145,6 +125,8 @@ class ManualRunTests(unittest.TestCase):
         command = run.call_args.args[0]
         self.assertIn("--restricted", command)
         self.assertIn("--safe-mode", command)
+        self.assertIn("Please handle the review comments", command[2])
+        self.assertIn('"issue": "449"', command[2])
         self.assertIn("--tools", command)
         self.assertEqual(command[command.index("--tools") + 1], "")
         self.assertEqual(command[command.index("--permission-mode") + 1], "plan")

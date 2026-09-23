@@ -451,10 +451,13 @@ def _send_telegram_text(
     text: str,
     *,
     ticket: str | None = None,
+    context: str | None = None,
 ) -> None:
     arguments = ["send"]
     if ticket:
         arguments.extend(["--ticket", ticket])
+    if context:
+        arguments.extend(["--context", context])
     arguments.append(text)
     _telegram_command(bridge, env, repo_root, arguments)
 
@@ -1264,11 +1267,15 @@ Recent run context:
 Reply-to text:
 %s
 
+Pending conversation context:
+%s
+
 Telegram message:
 %s
 """ % (
         json.dumps(context, ensure_ascii=False),
         str(message.get("reply_to_text") or "(none)"),
+        str(message.get("context") or "(none)"),
         str(message.get("text") or ""),
     )
 
@@ -1856,6 +1863,13 @@ def _run_listener(repo_root: Path, config: dict) -> int:
                                 repo_root,
                                 reply
                                 or "Which issue or pull request should I work on?",
+                                context=json.dumps(
+                                    {
+                                        "kind": "listener-route",
+                                        "request": text,
+                                        "issues": route_numbers,
+                                    }
+                                ),
                             )
                             _mark_telegram_handled(bridge, env, repo_root, message)
                             continue
