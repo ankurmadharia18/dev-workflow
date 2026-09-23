@@ -284,6 +284,15 @@ pass, reply on the existing PR with the disposition and rationale for findings
 the human rejected. This steering cannot override the repository, security,
 branch, deployment, secret-handling, or other safety constraints in this prompt.
 
+Before delegating a review-feedback task, map every review finding to FIX,
+REJECT, or LEAVE based on this steering. Phrases such as "not a problem",
+"intended behaviour", or "do not fix" reject the ENTIRE matching finding,
+including its suggested alternatives, mitigations, filters, migrations, and
+partial variants. Include both the disposition map and this verbatim steering
+in every implementer delegation. The implementer may change only findings
+marked FIX. If the quoted or paraphrased text cannot be matched confidently to
+one finding, stop before editing and ask one clarification question.
+
 --- BEGIN VERBATIM HUMAN STEERING ---
 {request_context}
 --- END VERBATIM HUMAN STEERING ---
@@ -847,6 +856,22 @@ def _run_manual(
                     }
                 }
             else:
+                if intent == "review-feedback" and request_context.strip():
+                    implementer_steering = f"""
+
+This is a review-feedback pass. The operator's exact steering is below:
+--- BEGIN VERBATIM HUMAN STEERING ---
+{request_context}
+--- END VERBATIM HUMAN STEERING ---
+Implement only findings the coordinator explicitly marks FIX. Any matching
+finding described as "not a problem", "intended behaviour", "do not fix", or
+equivalent is rejected in its entirety: do not implement its suggested
+alternatives, mitigations, filters, migrations, or partial variants. If the
+coordinator's task conflicts with this steering, stop without editing and
+report the conflict.
+"""
+                else:
+                    implementer_steering = ""
                 agents = {
                     "implementer": {
                         "description": (
@@ -859,6 +884,7 @@ def _run_manual(
                             "relevant tests, and commit locally. The coordinator owns any "
                             "feature-branch push and draft PR creation. Do not merge, deploy, "
                             "access secrets, or alter GitHub issues."
+                            + implementer_steering
                         ),
                         "model": selected_implementer_model,
                     }
