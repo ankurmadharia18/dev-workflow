@@ -18,6 +18,7 @@ import subprocess
 import sys
 import time
 
+import jev_shadow
 from github_issues import (
     GitHubAdapterError,
     add_label,
@@ -1434,7 +1435,18 @@ def _route_listener_message(
     )
     if completed.returncode != 0:
         raise RuntimeError("coordinator router exited with status %d" % completed.returncode)
-    return _load_listener_route(completed.stdout)
+    route = _load_listener_route(completed.stdout)
+    try:
+        jev_shadow.observe_async(
+            message,
+            progress,
+            str(route.get("action") or ""),
+            _listener_state_path(repo_root, config).parent,
+        )
+    except Exception:
+        # An observational comparison must never alter the live route.
+        pass
+    return route
 
 
 def _mark_telegram_handled(
