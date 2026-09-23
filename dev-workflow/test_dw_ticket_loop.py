@@ -305,6 +305,8 @@ class ManualRunTests(unittest.TestCase):
         self.assertIn("authoritative for the requested scope", prompt)
         self.assertIn("Do not replace it with a\nrouter summary", prompt)
         self.assertIn("reply on the existing PR with the disposition", prompt)
+        self.assertIn("reject the ENTIRE matching finding", prompt)
+        self.assertIn("suggested alternatives, mitigations, filters, migrations", prompt)
 
     def test_listener_request_context_keeps_message_before_reply_context(self):
         context = dw_ticket_loop._listener_request_context(
@@ -696,6 +698,47 @@ class ManualRunTests(unittest.TestCase):
         set_claimed_mock.assert_called_once_with(
             "acme/repo", 42, "agent-ready", "agent-claimed", claimed=True
         )
+
+    @patch.object(
+        dw_ticket_loop,
+        "_selection",
+        return_value=("acme/repo", "agent-ready", [ISSUE]),
+    )
+    @patch.object(
+        dw_ticket_loop,
+        "_load_claude_outcomes",
+        return_value={42: {"status": "pr_opened"}},
+    )
+    @patch.object(dw_ticket_loop, "_engine_is_authenticated", return_value=True)
+    @patch.object(dw_ticket_loop, "set_claimed")
+    def test_review_implementer_receives_exact_rejected_finding(
+        self, _set_claimed, _auth, _outcomes, _selection
+    ):
+        steering = (
+            "Fix them\n\n"
+            "The transitional union finding is not a problem. It is intended behaviour."
+        )
+        completed = subprocess.CompletedProcess([], 0)
+        with patch.object(
+            dw_ticket_loop.subprocess, "run", return_value=completed
+        ) as runner:
+            self.assertEqual(
+                dw_ticket_loop._run_manual(
+                    Path("/tmp/repo"),
+                    CONFIG,
+                    1,
+                    intent="review-feedback",
+                    request_context=steering,
+                ),
+                0,
+            )
+
+        command = runner.call_args.args[0]
+        agents = json.loads(command[command.index("--agents") + 1])
+        implementer_prompt = agents["implementer"]["prompt"]
+        self.assertIn(steering, implementer_prompt)
+        self.assertIn("rejected in its entirety", implementer_prompt)
+        self.assertIn("filters, migrations, or partial variants", implementer_prompt)
 
     @patch.object(
         dw_ticket_loop,
