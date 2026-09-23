@@ -103,6 +103,56 @@ class ManualRunTests(unittest.TestCase):
             [997],
         )
 
+    def test_review_feedback_instruction_uses_latest_single_issue(self):
+        progress = {"issues": {"449": {"phase": "pr_opened"}}}
+        self.assertEqual(
+            dw_ticket_loop._review_request_numbers(
+                "Check PR reciew comments and ask the implementor to fix them, "
+                "then reply back in the comment",
+                progress,
+            ),
+            [449],
+        )
+
+    def test_review_feedback_instruction_honors_explicit_issue(self):
+        progress = {"issues": {"449": {"phase": "pr_opened"}}}
+        self.assertEqual(
+            dw_ticket_loop._review_request_numbers(
+                "Address the review feedback for #997", progress
+            ),
+            [997],
+        )
+
+    def test_review_feedback_instruction_asks_when_context_is_ambiguous(self):
+        progress = {
+            "issues": {
+                "449": {"phase": "pr_opened"},
+                "997": {"phase": "pr_opened"},
+            }
+        }
+        self.assertEqual(
+            dw_ticket_loop._review_request_numbers(
+                "Check the PR review comments and fix them", progress
+            ),
+            [],
+        )
+
+    def test_review_feedback_prompt_maintains_existing_pr(self):
+        prompt = dw_ticket_loop._manual_prompt(
+            Path("/repo"),
+            "acme/repo",
+            [ISSUE],
+            CONFIG,
+            intent="review-feedback",
+        )
+        self.assertIn("REVIEW-FEEDBACK maintenance pass", prompt)
+        normalized = " ".join(prompt.split())
+        self.assertIn("Do not reimplement the issue", normalized)
+        self.assertIn(
+            "reply on GitHub to each actionable review comment", normalized
+        )
+        self.assertIn("update the EXISTING draft pull request", normalized)
+
     def test_unrelated_chatter_is_not_misclassified_as_status(self):
         progress = {"issues": {"449": {"phase": "pr_opened"}}}
         self.assertIsNone(

@@ -98,6 +98,8 @@ def _selection(
     config: dict,
     maximum: int,
     requested_numbers: list[int] | None = None,
+    *,
+    include_existing_pr: bool = False,
 ):
     tracker = config.get("tracker", {})
     if tracker.get("provider") != "github":
@@ -113,6 +115,20 @@ def _selection(
         ("tracker", "roles", "exclude", "labels"),
         ["agent-claimed", "agent-blocked", "manual", "gated", "decision"],
     )
+    if include_existing_pr:
+        if not requested_numbers:
+            raise RuntimeError("review-feedback requires an issue number")
+        issues = []
+        for number in requested_numbers:
+            issue = get_issue(github_repo, number)
+            if issue.state.upper() != "OPEN":
+                raise RuntimeError("issue #%d is not open" % number)
+            pull = find_issue_pull_request(github_repo, number)
+            if pull is None or pull.state.upper() != "OPEN":
+                raise RuntimeError("issue #%d has no open pull request" % number)
+            issues.append(issue)
+        return github_repo, queue_label, issues[:maximum]
+
     issues = list_actionable(github_repo, queue_label, excludes)
     if requested_numbers:
         requested = set(requested_numbers)
@@ -184,6 +200,7 @@ def _manual_prompt(
     engine: str = "claude",
     implementer_model: str = "",
     implementer_effort: str = "",
+    intent: str = "implementation",
 ) -> str:
     test_command = _role(config, ("quality", "test"), "")
     lint_command = _role(config, ("quality", "lint"), "")
@@ -208,6 +225,26 @@ def _manual_prompt(
         Path(__file__).resolve(),
         repo_root,
     )
+    if intent == "review-feedback":
+        intent_instructions = """
+This is a REVIEW-FEEDBACK maintenance pass for an existing draft PR. Do not
+reimplement the issue and do not open a duplicate PR. Inspect the existing PR,
+all general and inline review comments, review decisions, and CI/check results.
+Delegate every actionable code change to the implementer. Then independently
+inspect the updated diff and test evidence, push commits to the existing feature
+branch, and reply on GitHub to each actionable review comment with what changed.
+If there is no actionable feedback, leave the code unchanged and report that
+clearly. Return `pr_opened` with the existing PR URL when the PR remains open.
+""".strip()
+        completion_instructions = f"""For each completed issue, push only its
+existing `codex/issue-<number>` feature branch and update the EXISTING draft pull
+request targeting `{base_branch}`. Never open a duplicate pull request."""
+    else:
+        intent_instructions = ""
+        completion_instructions = f"""For each completed issue, push only its
+`codex/issue-<number>` feature branch and open a DRAFT pull request targeting
+`{base_branch}`. Include the issue link, scope, verification evidence, and
+remaining risks in the PR body."""
     return f"""You are the coordinator for a manually triggered LOCAL development pass.
 
 Repository: {repo_root}
@@ -215,6 +252,8 @@ GitHub: {github_repo}
 Base branch: {base_branch}
 Selected issues:
 {issue_lines}
+
+{intent_instructions}
 
 Live progress reporting is mandatory. Before each meaningful phase, run:
 `{progress_command} --issue <number> --actor <coordinator|implementer> --phase <triaging|implementing|testing|reviewing|pr_opened|needs_input|failed> --detail "<one concrete sentence>"`
@@ -232,9 +271,7 @@ primary checkout directly. Reuse an existing issue worktree, branch, commit or
 draft PR when present; never create a duplicate PR. {delegation}, then
 independently inspect its diff and test evidence.
 
-For each completed issue, push only its `codex/issue-<number>` feature branch
-and open a DRAFT pull request targeting `{base_branch}`. Include the issue link,
-scope, verification evidence, and remaining risks in the PR body. Never push
+{completion_instructions} Never push
 directly to `{base_branch}` or any production branch. Do NOT merge a PR, deploy,
 edit or comment on GitHub issues, change cloud resources, or access secrets.
 Do not modify protected paths: {json.dumps(protected)}. Keep every issue
@@ -646,6 +683,7 @@ def _run_manual(
     ask_models: bool = False,
     input_fn=input,
     requested_numbers: list[int] | None = None,
+    intent: str = "implementation",
 ) -> int:
     pass_outcome = {
         "picked": 0,
@@ -678,7 +716,10 @@ def _run_manual(
     configured_cap = _role(config, ("build", "cap_per_pass"), 1)
     execution_limit = min(maximum, configured_cap)
     github_repo, queue_label, issues = _selection(
-        config, execution_limit, requested_numbers
+        config,
+        execution_limit,
+        requested_numbers,
+        include_existing_pr=intent == "review-feedback",
     )
     if not issues:
         print("No actionable GitHub issues found for %s." % github_repo)
@@ -758,6 +799,7 @@ def _run_manual(
                     config,
                     engine="claude",
                     implementer_model=selected_implementer_model,
+                    intent=intent,
                 ),
                 "--model",
                 model,
@@ -799,6 +841,7 @@ def _run_manual(
                     engine="codex",
                     implementer_model=selected_implementer_model,
                     implementer_effort=implementer_effort,
+                    intent=intent,
                 ),
             ]
         completed = subprocess.run(
@@ -1165,6 +1208,50 @@ def _natural_status_numbers(text: str, progress: dict) -> list[int] | None:
     return numbers[:3]
 
 
+def _review_request_numbers(text: str, progress: dict) -> list[int] | None:
+    """Recognize an instruction to address feedback on an existing PR."""
+    normalized = re.sub(r"\s+", " ", text.strip().lower())
+    if not normalized:
+        return None
+    review_terms = (
+        "review comment",
+        "review feedback",
+        "pr comment",
+        "pull request comment",
+        "reciew comment",
+    )
+    action_terms = (
+        "check",
+        "address",
+        "fix",
+        "resolve",
+        "handle",
+        "ask the implementer",
+        "ask the implementor",
+        "reply back",
+    )
+    if not any(term in normalized for term in review_terms):
+        return None
+    if not any(term in normalized for term in action_terms):
+        return None
+
+    numbers = []
+    for raw in re.findall(r"(?<!\w)#?(\d+)\b", normalized):
+        number = int(raw)
+        if number not in numbers:
+            numbers.append(number)
+    if numbers:
+        return numbers[:3]
+
+    progress_issues = progress.get("issues")
+    if not isinstance(progress_issues, dict) or len(progress_issues) != 1:
+        return []
+    try:
+        return [int(next(iter(progress_issues)))]
+    except (TypeError, ValueError):
+        return []
+
+
 def _mark_telegram_handled(
     bridge: list[str], env: dict[str, str], repo_root: Path, message: dict
 ) -> None:
@@ -1410,8 +1497,18 @@ def _launch_listener_run(
     numbers: list[int],
     coordinator: str,
     implementer: str,
+    *,
+    intent: str = "implementation",
 ) -> tuple[subprocess.Popen, Path, str]:
-    _github_repo, _queue_label, issues = _queue_requested_issues(config, numbers)
+    if intent == "review-feedback":
+        _github_repo, _queue_label, issues = _selection(
+            config,
+            len(numbers),
+            numbers,
+            include_existing_pr=True,
+        )
+    else:
+        _github_repo, _queue_label, issues = _queue_requested_issues(config, numbers)
     run_id = _begin_progress_run(
         repo_root, config, issues, coordinator, implementer
     )
@@ -1433,6 +1530,8 @@ def _launch_listener_run(
         coordinator,
         "--implementer-model",
         implementer,
+        "--intent",
+        intent,
     ]
     log_handle = log_path.open("w")
     try:
@@ -1563,8 +1662,82 @@ def _run_listener(repo_root: Path, config: dict) -> int:
                     )
                     _mark_telegram_handled(bridge, env, repo_root, message)
                     continue
+                progress = _read_progress(repo_root, config)
+                review_numbers = _review_request_numbers(text, progress)
+                if review_numbers is not None:
+                    if state.get("paused"):
+                        _send_telegram_text(
+                            bridge, env, repo_root, "⏸️ Listener is paused. Send resume first."
+                        )
+                        _mark_telegram_handled(bridge, env, repo_root, message)
+                        continue
+                    if active_process is not None or (
+                        state.get("active_run")
+                        and _pid_alive((state.get("active_run") or {}).get("pid"))
+                    ):
+                        _send_telegram_text(
+                            bridge, env, repo_root, "⚠️ A local pass is already running."
+                        )
+                        _mark_telegram_handled(bridge, env, repo_root, message)
+                        continue
+                    if not review_numbers:
+                        _send_telegram_text(
+                            bridge,
+                            env,
+                            repo_root,
+                            "Which issue or PR should I review? Include its number, for example: check review comments for #449.",
+                        )
+                        _mark_telegram_handled(bridge, env, repo_root, message)
+                        continue
+                    coordinator = str(
+                        (progress.get("coordinator") or {}).get("model")
+                        or _role(config, ("build", "model"), "fable")
+                    )
+                    implementer = str(
+                        progress.get("implementer_model")
+                        or _role(config, ("build", "subagent_model"), "opus")
+                    )
+                    try:
+                        active_process, log_path, run_id = _launch_listener_run(
+                            repo_root,
+                            config,
+                            review_numbers,
+                            coordinator,
+                            implementer,
+                            intent="review-feedback",
+                        )
+                    except (GitHubAdapterError, OSError, RuntimeError) as exc:
+                        _send_telegram_text(
+                            bridge, env, repo_root, "⚠️ Could not start review pass: %s" % exc
+                        )
+                        _mark_telegram_handled(bridge, env, repo_root, message)
+                        continue
+                    state["active_run"] = {
+                        "issues": review_numbers,
+                        "coordinator": coordinator,
+                        "implementer": implementer,
+                        "pid": active_process.pid,
+                        "log": str(log_path),
+                        "run_id": run_id,
+                        "intent": "review-feedback",
+                        "started_at": int(time.time()),
+                    }
+                    _save_listener_state(repo_root, config, state)
+                    _send_telegram_text(
+                        bridge,
+                        env,
+                        repo_root,
+                        "🔎 Checking review feedback for %s.\n\nCoordinator: %s\nImplementer: %s\n\nI will report back here when the PR is updated."
+                        % (
+                            ", ".join("#%s" % number for number in review_numbers),
+                            coordinator,
+                            implementer,
+                        ),
+                    )
+                    _mark_telegram_handled(bridge, env, repo_root, message)
+                    continue
                 natural_status = _natural_status_numbers(
-                    text, _read_progress(repo_root, config)
+                    text, progress
                 )
                 if natural_status is not None:
                     response = _render_workflow_status(
@@ -1718,6 +1891,12 @@ def main(argv: list[str] | None = None) -> int:
         "--issues",
         help="comma-separated issue numbers; run/plan exactly this requested subset",
     )
+    parser.add_argument(
+        "--intent",
+        choices=("implementation", "review-feedback"),
+        default="implementation",
+        help="run mode for a new implementation or existing PR feedback",
+    )
     parser.add_argument("--issue", type=int, help="issue number for a progress update")
     parser.add_argument(
         "--actor", choices=("coordinator", "implementer"), help="progress actor"
@@ -1778,6 +1957,7 @@ def main(argv: list[str] | None = None) -> int:
                 implementer_model=args.implementer_model,
                 ask_models=args.engine == "claude" and sys.stdin.isatty(),
                 requested_numbers=requested_numbers,
+                intent=args.intent,
             )
         return _plan(
             repo_root,
