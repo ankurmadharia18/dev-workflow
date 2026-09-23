@@ -103,8 +103,9 @@ class ManualRunTests(unittest.TestCase):
             [997],
         )
 
+    @patch.object(dw_ticket_loop.jev_shadow, "observe_async")
     @patch.object(dw_ticket_loop.subprocess, "run")
-    def test_listener_router_is_restricted_toolless_and_structured(self, run):
+    def test_listener_router_is_restricted_toolless_and_structured(self, run, observe):
         payload = {
             "action": "review_feedback",
             "issues": [449],
@@ -122,6 +123,12 @@ class ManualRunTests(unittest.TestCase):
             Path("/repo"),
         )
         self.assertEqual(route, payload)
+        observe.assert_called_once_with(
+            {"text": "Please handle the review comments"},
+            {"coordinator": {"model": "fable"}, "issues": {"449": {}}},
+            "review_feedback",
+            Path("/repo/.local/agent-loop"),
+        )
         command = run.call_args.args[0]
         self.assertIn("--restricted", command)
         self.assertIn("--safe-mode", command)
@@ -131,6 +138,21 @@ class ManualRunTests(unittest.TestCase):
         self.assertEqual(command[command.index("--tools") + 1], "")
         self.assertEqual(command[command.index("--permission-mode") + 1], "plan")
         self.assertEqual(command[command.index("--permission-prompts") + 1], "none")
+
+    @patch.object(dw_ticket_loop.jev_shadow, "observe_async", side_effect=RuntimeError("shadow down"))
+    @patch.object(dw_ticket_loop.subprocess, "run")
+    def test_shadow_failure_cannot_change_live_route(self, run, _observe):
+        route = {"action": "status", "issues": [449], "reply": "", "worker_model": ""}
+        run.return_value = SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"structured_output": route}),
+        )
+        self.assertEqual(
+            dw_ticket_loop._route_listener_message(
+                {"text": "Status for #449"}, {}, CONFIG, Path("/repo")
+            ),
+            route,
+        )
 
     def test_router_distinguishes_independent_review_and_direct_answers(self):
         schema = dw_ticket_loop._listener_route_schema()
