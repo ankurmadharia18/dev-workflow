@@ -101,6 +101,7 @@ COPY dev-workflow/dw-config.py \
      dev-workflow/queue-count.py \
      dev-workflow/github_issues.py \
      dev-workflow/dw_ticket_loop.py \
+     dev-workflow/jev_shadow.py \
      /opt/dev-workflow/bin/
 # The plugin (for --plugin-dir): a copy of the plugin manifest + all skills.
 COPY .claude-plugin/ /opt/dev-workflow/plugin/.claude-plugin/
