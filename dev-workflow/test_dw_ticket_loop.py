@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -152,6 +153,136 @@ class ManualRunTests(unittest.TestCase):
                 {"text": "Status for #449"}, {}, CONFIG, Path("/repo")
             ),
             route,
+        )
+
+    @patch.object(dw_ticket_loop.jev_shadow, "record_live_decision")
+    @patch.object(dw_ticket_loop.jev_shadow, "observe_async")
+    @patch.object(dw_ticket_loop.jev_shadow, "evaluate")
+    @patch.object(dw_ticket_loop.subprocess, "run")
+    def test_live_jev_guides_coordinator_before_it_decides(self, run, evaluate, observe, record):
+        guidance = {
+            "action": "independent_review",
+            "confidence": 0.92,
+            "rejects_review_finding": 0.02,
+        }
+        events = []
+        evaluate.side_effect = lambda *_: events.append("jev") or guidance
+
+        def coordinator(command, **_kwargs):
+            events.append("coordinator")
+            self.assertIn('"action": "independent_review"', command[2])
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({"structured_output": {
+                    "action": "independent_review", "issues": [449],
+                    "reply": "", "worker_model": "opus",
+                }}),
+            )
+
+        run.side_effect = coordinator
+        with patch.dict(os.environ, {"DW_JEV_LIVE": "1", "TYPESAFE_API_KEY": "test-key"}):
+            route = dw_ticket_loop._route_listener_message(
+                {"message_id": 41, "text": "Ask a fresh reviewer to check #449"},
+                {"issues": {"449": {"phase": "pr_opened"}}}, CONFIG, Path("/repo")
+            )
+        self.assertEqual(events, ["jev", "coordinator"])
+        self.assertEqual(route["action"], "independent_review")
+        observe.assert_not_called()
+        record.assert_called_once()
+
+    @patch.object(dw_ticket_loop.jev_shadow, "record_live_decision")
+    @patch.object(dw_ticket_loop.jev_shadow, "evaluate", side_effect=TimeoutError("private data"))
+    @patch.object(dw_ticket_loop.subprocess, "run")
+    def test_live_jev_timeout_falls_back_without_leaking_error(self, run, _evaluate, record):
+        route = {"action": "status", "issues": [449], "reply": "", "worker_model": ""}
+        run.return_value = SimpleNamespace(
+            returncode=0, stdout=json.dumps({"structured_output": route})
+        )
+        with patch.dict(os.environ, {"DW_JEV_LIVE": "1", "TYPESAFE_API_KEY": "test-key"}):
+            self.assertEqual(
+                dw_ticket_loop._route_listener_message(
+                    {"message_id": 42, "text": "Status?"}, {}, CONFIG, Path("/repo")
+                ),
+                route,
+            )
+        self.assertEqual(record.call_args.args[-1], "TimeoutError")
+        self.assertNotIn("private data", str(record.call_args))
+
+    def test_mutating_disagreement_asks_instead_of_starting_work(self):
+        route = {"action": "review_feedback", "issues": [449], "reply": "", "worker_model": ""}
+        guidance = {"action": "answer", "confidence": 0.9, "rejects_review_finding": 0.0}
+        result = dw_ticket_loop._reconcile_listener_route(
+            route, guidance, {"text": "Which tests ran for #449?"},
+            {"issues": {"449": {"phase": "pr_opened"}}},
+        )
+        self.assertEqual(result["action"], "clarify")
+        self.assertEqual(result["issues"], [])
+
+    def test_multiple_active_targets_require_explicit_reference(self):
+        route = {"action": "review_feedback", "issues": [449], "reply": "", "worker_model": ""}
+        guidance = {"action": "review_feedback", "confidence": 1.0, "rejects_review_finding": 0.0}
+        progress = {"issues": {"449": {"pr_url": "https://github.com/acme/repo/pull/1004"},
+                               "997": {"pr_url": "https://github.com/acme/repo/pull/1007"}}}
+        self.assertEqual(
+            dw_ticket_loop._reconcile_listener_route(
+                route, guidance, {"text": "Fix the PR comments"}, progress
+            )["action"],
+            "clarify",
+        )
+        self.assertEqual(
+            dw_ticket_loop._reconcile_listener_route(
+                route, guidance, {"text": "Fix comments on PR #1004"}, progress
+            )["action"],
+            "review_feedback",
+        )
+        self.assertEqual(
+            dw_ticket_loop._reconcile_listener_route(
+                route, guidance, {"text": "Fix comments on #997"}, progress
+            )["action"],
+            "clarify",
+        )
+
+    def test_unsupported_or_deferred_request_cannot_start_code_work(self):
+        route = {"action": "review_feedback", "issues": [449], "reply": "", "worker_model": ""}
+        guidance = {"action": "review_feedback", "confidence": 0.99, "rejects_review_finding": 0.0}
+        for text in ("Wait until next week on #449", "Merge PR #1004 and deploy"):
+            with self.subTest(text=text):
+                result = dw_ticket_loop._reconcile_listener_route(
+                    route, guidance, {"text": text},
+                    {"issues": {"449": {"phase": "pr_opened"}}},
+                )
+                self.assertEqual(result["action"], "clarify")
+        self.assertEqual(
+            dw_ticket_loop._reconcile_listener_route(
+                route, guidance,
+                {"text": "Fix comments on #449 before merge"},
+                {"issues": {"449": {"phase": "pr_opened"}}},
+            )["action"],
+            "review_feedback",
+        )
+
+    def test_natural_language_start_requires_named_issue(self):
+        route = {"action": "start_issues", "issues": [449], "reply": "", "worker_model": ""}
+        guidance = {"action": "start_issues", "confidence": 1.0, "rejects_review_finding": 0.0}
+        self.assertEqual(
+            dw_ticket_loop._reconcile_listener_route(
+                route, guidance, {"text": "Pick an issue for me"}, {"issues": {}}
+            )["action"], "clarify",
+        )
+        self.assertEqual(
+            dw_ticket_loop._reconcile_listener_route(
+                route, guidance, {"text": "Please start issue 449"}, {"issues": {}}
+            )["action"], "start_issues",
+        )
+
+    def test_single_active_issue_does_not_override_explicit_other_target(self):
+        route = {"action": "review_feedback", "issues": [449], "reply": "", "worker_model": ""}
+        guidance = {"action": "review_feedback", "confidence": 1.0, "rejects_review_finding": 0.0}
+        progress = {"issues": {"449": {"phase": "pr_opened"}}}
+        self.assertEqual(
+            dw_ticket_loop._reconcile_listener_route(
+                route, guidance, {"text": "Fix comments for issue #997"}, progress
+            )["action"], "clarify",
         )
 
     def test_router_distinguishes_independent_review_and_direct_answers(self):

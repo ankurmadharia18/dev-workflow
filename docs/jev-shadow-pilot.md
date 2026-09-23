@@ -1,5 +1,8 @@
 # Jev Telegram intent pilot (shadow only)
 
+This records the original observational pilot. The proposed opt-in live
+advisory path and full rollout plan are in [jev-live-workflow-plan.md](jev-live-workflow-plan.md).
+
 The local Telegram listener still uses its Claude router to decide and execute
 workflow actions. The Jev observer only compares a second classification; it
 cannot start an issue, alter a PR, or override a human decision.

@@ -118,6 +118,20 @@ class JevShadowTests(unittest.TestCase):
             self.assertEqual(report["counts"], {"observations": 2, "disagreements": 1, "agreements": 1})
             self.assertEqual(report["disagreements"][0]["message_id"], 42)
 
+    def test_live_decision_log_contains_metadata_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            jev_shadow.record_live_decision(
+                Path(directory), 42,
+                {"action": "review_feedback", "confidence": 0.9,
+                 "rejects_review_finding": 0.01},
+                "review_feedback", "clarify", None,
+            )
+            path = Path(directory) / "jev-live.jsonl"
+            record = json.loads(path.read_text())
+            self.assertEqual(record["final_action"], "clarify")
+            self.assertNotIn(MESSAGE["text"], path.read_text())
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+
 
 if __name__ == "__main__":
     unittest.main()

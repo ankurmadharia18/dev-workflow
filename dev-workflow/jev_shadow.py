@@ -1,7 +1,7 @@
-"""Opt-in, non-authoritative Jev comparison for Telegram intent routing.
+"""Bounded Jev intent evaluation and metadata-only routing diagnostics.
 
-The live Claude route always wins. This module never launches an action, stores
-message text, or sends anything to TypeSafe unless DW_JEV_SHADOW=1 is set.
+Jev never launches an action. The shadow observer requires DW_JEV_SHADOW=1;
+the listener's live advisory path requires DW_JEV_LIVE=1 and a key.
 """
 
 from __future__ import annotations
@@ -108,6 +108,28 @@ def _append_result(path: Path, result: dict) -> None:
         output.write(json.dumps(result, separators=(",", ":")) + "\n")
         output.flush()
         fcntl.flock(output, fcntl.LOCK_UN)
+
+
+def record_live_decision(
+    state_dir: Path,
+    message_id: int | None,
+    guidance: dict | None,
+    coordinator_action: str | None,
+    final_action: str | None,
+    error_type: str | None,
+) -> None:
+    """Record decisions without Telegram text, reply context, or error bodies."""
+    record = {
+        "observed_at": int(time.time()),
+        "message_id": message_id,
+        "jev_model": MODEL,
+        "jev": guidance,
+        "coordinator_action": coordinator_action,
+        "final_action": final_action,
+    }
+    if error_type:
+        record["error_type"] = error_type
+    _append_result(state_dir / "jev-live.jsonl", record)
 
 
 def _observe(message: dict, progress: dict, live_action: str, api_key: str, path: Path) -> None:
