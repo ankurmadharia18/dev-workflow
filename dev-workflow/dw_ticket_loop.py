@@ -489,6 +489,9 @@ def _poll_telegram_answers(
         if _is_listener_command(text):
             unhandled.append(message)
             continue
+        if message.get("context"):
+            unhandled.append(message)
+            continue
         issue_number = _issue_number_from_message(message)
         if (
             issue_number is None
